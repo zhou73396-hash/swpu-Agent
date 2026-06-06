@@ -11,9 +11,11 @@ mvn spring-boot:run            # run on localhost:8080
 
 Requires MySQL 8.x + Redis 6.x at runtime. Database init: `mysql -u root -p chatbi_db < sql/init.sql`.
 
+Default credentials: MySQL `root/root`, Redis `localhost:6379` (no password). All secrets use `${ENV_VAR:default}` in `application-dev.yml`.
+
 ## Architecture
 
-Spring Boot 3.5.14 + Java 17 + MyBatis 3.0.5 + Redis + Maven.
+Spring Boot 3.5.14 + Java 17 + MyBatis 3.0.5 + Redis + Maven + jjwt 0.12.6.
 
 ```
 controller → service → mapper (MyBatis annotations, no XML)
@@ -22,7 +24,7 @@ dto/request (Jakarta Bean Validation) + dto/response (ApiResponse<T>)
      ↓
 common/exception (AppException → 6 HTTP-mapped subclasses)
      ↓
-common/GlobalExceptionHandler (@RestControllerAdvice — catches all)
+common/GlobalExceptionHandler (@RestControllerAdvice — catches 7 exception types)
 ```
 
 **Response format** (every endpoint returns this):
@@ -30,41 +32,72 @@ common/GlobalExceptionHandler (@RestControllerAdvice — catches all)
 {"code": 200, "message": "success", "data": { ... }}
 ```
 
-**Exception flow**: Service throws e.g. `new ValidationException("邮箱未注册")` → GlobalExceptionHandler maps to HTTP 400 → returns `{"code":400,"message":"邮箱未注册"}`.
+## Modules & Endpoints (19 total)
 
-## What's Implemented
+### Auth — `POST /api/auth/*` (public, no JWT)
+- `send_code` / `send_register_code` — send 6-digit code to email (stored in Redis with 300s TTL)
+- `login` / `register` — verify code → returns JWT `accessToken` + opaque `refreshToken`
+- Rules: login code → email MUST exist in `user_info`; register code → email MUST NOT exist
 
-| Module | Files | Status |
-|--------|-------|--------|
-| Auth | AuthController, AuthService, VerificationCodeService | 4 endpoints working |
-| Agent tools | MysqlTool (SELECT-only), SendEmailTool (placeholder) | Ready for LangChain4j integration |
-| Config | CorsConfig, RedisConfig | Done |
+### Chat — `GET|POST|DELETE /api/chat/*` (JWT required)
+- `GET /sessions` — list user's sessions; `POST /sessions` — create session
+- `GET /sessions/{id}/messages` — message history; `DELETE /sessions/{id}` — soft-delete
+- `POST /send` — SSE streaming (`text/event-stream`), async Agent pipeline with events: `user_saved → thinking → tool_call → sql → tool_result → text → done`
 
-**Auth endpoints** (all public, no JWT yet):
-- `POST /api/auth/send_code` — login verification code
-- `POST /api/auth/send_register_code` — registration verification code
-- `POST /api/auth/login` — verify code → returns placeholder token
-- `POST /api/auth/register` — create user in `user_info` table
-- `GET /api/health` — health check
+### DB Connections — `/api/db/*` (JWT required)
+- Full CRUD at `/connections` + `POST /connections/{id}/test` (real JDBC ping)
+- `GET /connections/{id}/schema` — retrieves table/column metadata via JDBC metadata
+- Passwords encrypted with AES-128 (hardcoded key `swpu-agent-2026!`)
 
-**Verification code flow**: codes stored in Redis (`login_code:{email}` / `register_code:{email}`, TTL=300s), deleted on successful use.
+### Visualization — `POST /api/viz/generate` (JWT required)
+- Accepts `List<Map>` data + chart type → returns ECharts option JSON
+- Auto-detects chart type: bar/line/pie/scatter based on column data types
 
-**Agent decision logic**: login code → email MUST exist in user_info; register code → email MUST NOT exist. Implemented in AuthService, tools in `agent/tool/`.
+### User — `GET|PUT /api/user/profile` (JWT required)
+- Read/update current user's profile fields (age, country, salary, email)
 
-## Planned / Not Yet Built
+### Health — `GET /api/health` (public)
+- Returns `{"status":"UP","timestamp":"...","version":"1.0.0"}`
 
-- JWT (security/JwtUtil, JwtAuthFilter) — tokens currently placeholder strings
-- Chat module (ChatController, ChatService, SSE streaming)
-- DB connection module (external DB management, schema retrieval)
-- Visualization (ECharts config generation)
-- Real SMTP email delivery (SendEmailTool only logs to console)
-- Tests (only the default context-load test exists)
+## JWT & Security
+
+- Algorithm: HS256, secret from `jwt.secret-key` config (default 32-char string)
+- Access token: 30min expiry, contains `sub` (userId) + `role` claim
+- Refresh token: 7-day expiry, 128-char random hex (not JWT)
+- `JwtAuthFilter` (servlet filter, not Spring Security) intercepts `/api/chat/*`, `/api/db/*`, `/api/viz/*`, `/api/user/*`
+- Token passed as `Authorization: Bearer <token>`; valid token sets `request.userId` + `request.role` attributes
+- Controllers extract userId via `(Long) request.getAttribute("userId")`
+
+## Exception Handling
+
+`GlobalExceptionHandler` maps these to proper HTTP status + `ApiResponse`:
+
+| Exception | HTTP | Example message |
+|-----------|------|-----------------|
+| `AppException` subclasses | per subclass | "邮箱未注册", "会话不存在" |
+| `MethodArgumentNotValidException` | 400 | field-level detail |
+| `HttpMessageNotReadableException` | 400 | "Invalid request body" |
+| `HttpRequestMethodNotSupportedException` | 405 | "Method not allowed" |
+| `NoHandlerFoundException` | 404 | "Resource not found" |
+| `Exception` (catch-all) | 500 | "Internal server error" |
+
+Exception messages are Chinese (user-facing).
+
+## Database
+
+6 tables in `chatbi_db`: `user_info`, `users`, `chat_sessions`, `chat_messages`, `db_connections`, `tool_invocations`. Full DDL in `sql/init.sql`.
 
 ## Conventions
 
 - MyBatis uses annotations (`@Select`, `@Insert`), not XML mappers
 - Lombok `@Data` on all entities/DTOs, `@RequiredArgsConstructor` on services
 - All API responses wrap in `ApiResponse<T>` — never return raw entities
-- Exception messages are Chinese (user-facing): "邮箱未注册", "验证码错误或已过期"
-- `application-dev.yml` uses `${ENV_VAR:default}` for all secrets — works out of the box
-- Configuration in `src/main/resources/application.yaml` activates `dev` profile by default
+- Configuration in `application.yaml` activates `dev` profile by default
+- Verification codes stored in Redis: `login_code:{email}` / `register_code:{email}`, TTL=300s
+
+## What's Not Yet Built
+
+- Real SMTP email delivery (SendEmailTool only logs to console)
+- LangChain4j integration (Agent currently returns mock/simulated responses)
+- Tests beyond the default context-load test
+- Refresh token endpoint (`POST /api/auth/refresh`)

@@ -1,499 +1,370 @@
-# ChatBI-Agent 编码规格说明书
+# ChatBI-Agent 项目说明书
 
-> 基于 Agent Documentation.md + Backend Documentation.md 综合编写。
-> **所有代码片段均来自实际源文件，可直接复制使用。**
-> 编译状态：✅ `mvn clean compile` BUILD SUCCESS (24 source files)
+> 基于实际代码库生成 | 19 个 API 端点 | 47 个 Java 源文件 | 6 张数据表
+> 测试日期: 2026-06-06 | 全部 19 端点 + 12 边界探测通过 ✅
 
 ---
 
 ## 一、项目概述
 
-本项目是一个 **ChatBI 智能数据助手系统**，核心功能：
-- 用户注册/登录（支持邮箱验证码 + 用户名密码双模式）
-- 用户可通过自然语言对话查询数据库、生成图表
-- Agent 智能体负责意图识别、NL→SQL、工具调用、发送验证码邮件
+**ChatBI 智能数据助手系统** — 基于 Spring Boot 的后端服务，支持：
+- 邮箱验证码注册/登录，JWT 令牌认证
+- 自然语言对话查询数据库（Agent 管道 + SSE 流式响应）
+- 外部数据库连接管理（CRUD + 连通性测试 + Schema 检索）
+- ECharts 图表配置自动生成（柱状图/折线图/饼图/散点图）
+- 用户个人资料管理
 
-**技术栈：**
+### 技术栈
+
 | 层级 | 技术 | 版本 |
 |------|------|------|
-| 后端框架 | Spring Boot | 3.5.14 |
+| 框架 | Spring Boot | 3.5.14 |
 | 语言 | Java | 17 |
-| 构建工具 | Maven | 3.9+ |
+| 构建 | Maven | 3.9+ |
 | 数据库 | MySQL | 8.x |
-| ORM | MyBatis (mybatis-spring-boot-starter) | 3.0.5 |
-| 缓存 | Redis (spring-boot-starter-data-redis) | — |
-| 校验 | spring-boot-starter-validation (Hibernate Validator) | 3.5.14 |
+| ORM | MyBatis (注解模式) | 3.0.5 |
+| 缓存 | Redis (Lettuce) | — |
+| JWT | jjwt | 0.12.6 |
+| 校验 | Hibernate Validator | — |
 | 工具 | Lombok | — |
-| Agent | LangChain4j（计划） | — |
 
 ---
 
-## 二、项目目录结构（已实现文件用 ✅ 标注）
+## 二、快速开始
+
+```bash
+# 1. 初始化数据库
+mysql -u root -p -e "CREATE DATABASE chatbi_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+mysql -u root -p chatbi_db < sql/init.sql
+
+# 2. 编译（无需数据库）
+mvn clean compile
+
+# 3. 启动（需要 MySQL + Redis）
+mvn spring-boot:run
+
+# 4. 验证
+curl http://localhost:8080/api/health
+# → {"code":200,"message":"success","data":{"status":"UP","version":"1.0.0"}}
+```
+
+默认凭证：MySQL `root:root`，Redis `localhost:6379`（无密码）。所有密钥通过 `${ENV_VAR:default}` 支持环境变量覆盖。
+
+---
+
+## 三、项目结构
 
 ```
 swpu-agent/
-├── pom.xml                                    # Maven 构建文件 ✅
-├── sql/
-│   └── init.sql                               # 数据库初始化脚本 ✅
-├── src/main/java/com/swpuagent/
-│   ├── SwpuAgentApplication.java              # Spring Boot 入口 ✅
-│   ├── controller/
-│   │   ├── AuthController.java                # 认证接口 ✅
-│   │   └── HealthController.java              # 健康检查 ✅
-│   │   ├── ChatController.java                # 对话接口（计划）
-│   │   ├── UserController.java                # 用户接口（计划）
-│   │   ├── DatabaseController.java            # 数据库连接接口（计划）
-│   │   └── VisualizationController.java       # 图表接口（计划）
-│   ├── service/
-│   │   ├── AuthService.java                   # 认证业务 ✅
-│   │   └── VerificationCodeService.java       # 验证码Redis服务 ✅
-│   │   ├── ChatService.java                   # 对话业务（计划）
-│   │   └── AgentService.java                  # Agent编排（计划）
-│   ├── mapper/
-│   │   └── UserInfoMapper.java                # 用户表Mapper ✅
-│   ├── entity/
-│   │   └── UserInfo.java                      # 用户实体 ✅
-│   ├── dto/
-│   │   ├── request/
-│   │   │   ├── SendCodeRequest.java           # ✅
-│   │   │   ├── LoginRequest.java              # ✅
-│   │   │   └── RegisterRequest.java            # ✅
-│   │   └── response/
-│   │       ├── ApiResponse.java               # 统一响应 ✅
-│   │       └── PageResponse.java              # 分页响应 ✅
-│   ├── config/
-│   │   ├── CorsConfig.java                    # CORS 跨域 ✅
-│   │   └── RedisConfig.java                   # Redis 序列化 ✅
-│   ├── agent/
-│   │   └── tool/
-│   │       ├── MysqlTool.java                 # Agent查询工具 ✅
-│   │       └── SendEmailTool.java             # Agent发邮件工具 ✅
-│   ├── security/                              # JWT（计划）
-│   └── common/
-│       ├── GlobalExceptionHandler.java        # 全局异常处理 ✅
-│       └── exception/
-│           ├── AppException.java              # 基础异常 ✅
-│           ├── NotFoundException.java         # →404 ✅
-│           ├── AuthenticationException.java   # →401 ✅
-│           ├── PermissionDeniedException.java # →403 ✅
-│           ├── ValidationException.java       # →400 ✅
-│           ├── ConflictException.java         # →409 ✅
-│           └── DatabaseQueryException.java    # →422 ✅
+├── pom.xml
+├── sql/init.sql                          # 6 张表完整 DDL
 ├── src/main/resources/
-│   ├── application.yml                        # 主配置 ✅
-│   └── application-dev.yml                    # 开发环境配置 ✅
-└── src/test/java/com/swpuagent/
-    └── SwpuAgentApplicationTests.java         # 测试 ✅
+│   ├── application.yml                   # spring.profiles.active: dev
+│   └── application-dev.yml               # 数据源/Redis/JWT/日志配置
+├── src/main/java/com/swpuagent/
+│   ├── SwpuAgentApplication.java         # 入口
+│   ├── controller/                       # 6 个 Controller
+│   │   ├── HealthController.java         # GET /api/health
+│   │   ├── AuthController.java           # 登录/注册/验证码 (4 端点)
+│   │   ├── ChatController.java           # 会话/消息/SSE 流 (5 端点)
+│   │   ├── DatabaseController.java       # DB 连接 CRUD/测试/Schema (6 端点)
+│   │   ├── VisualizationController.java  # 图表生成 (1 端点)
+│   │   └── UserController.java           # 个人资料 (2 端点)
+│   ├── service/                          # 7 个 Service
+│   │   ├── AuthService.java
+│   │   ├── VerificationCodeService.java
+│   │   ├── ChatService.java
+│   │   ├── AgentService.java
+│   │   ├── DatabaseConnectionService.java
+│   │   ├── VisualizationService.java
+│   │   └── UserService.java
+│   ├── mapper/                           # 4 个 Mapper (纯注解)
+│   │   ├── UserInfoMapper.java
+│   │   ├── ChatSessionMapper.java
+│   │   ├── ChatMessageMapper.java
+│   │   └── DbConnectionMapper.java
+│   ├── entity/                           # 4 个 Entity
+│   │   ├── UserInfo.java
+│   │   ├── ChatSession.java
+│   │   ├── ChatMessage.java
+│   │   └── DbConnection.java
+│   ├── dto/
+│   │   ├── request/                      # 8 个请求 DTO
+│   │   └── response/                     # ApiResponse + LoginResponse + PageResponse
+│   ├── security/
+│   │   ├── JwtUtil.java                  # HS256 JWT 生成/校验
+│   │   └── JwtAuthFilter.java           # Servlet Filter 鉴权
+│   ├── config/
+│   │   ├── CorsConfig.java
+│   │   ├── RedisConfig.java
+│   │   └── FilterConfig.java            # Filter 注册(精确路径)
+│   ├── agent/tool/
+│   │   ├── MysqlTool.java               # SELECT-only 查询工具
+│   │   └── SendEmailTool.java           # 邮件发送(占位)
+│   └── common/
+│       ├── GlobalExceptionHandler.java   # 7 种异常 → HTTP 状态码
+│       └── exception/                    # 6 个 AppException 子类
 ```
 
 ---
 
-## 三、Maven 依赖（pom.xml 关键依赖）
+## 四、数据库设计
 
-```xml
-<!-- 以下依赖已在 pom.xml 中配置，clone 后直接 mvn compile 即可 -->
+6 张表，完整 DDL 见 `sql/init.sql`：
 
-<!-- Spring Boot Web (嵌入式 Tomcat) -->
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-web</artifactId>
-</dependency>
-
-<!-- ⚠️ 必须添加此依赖，否则 jakarta.validation 注解无法解析 -->
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-validation</artifactId>
-</dependency>
-
-<!-- MyBatis -->
-<dependency>
-    <groupId>org.mybatis.spring.boot</groupId>
-    <artifactId>mybatis-spring-boot-starter</artifactId>
-    <version>3.0.5</version>
-</dependency>
-
-<!-- MySQL 驱动 -->
-<dependency>
-    <groupId>com.mysql</groupId>
-    <artifactId>mysql-connector-j</artifactId>
-    <scope>runtime</scope>
-</dependency>
-
-<!-- Redis -->
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-data-redis</artifactId>
-</dependency>
-
-<!-- Lombok -->
-<dependency>
-    <groupId>org.projectlombok</groupId>
-    <artifactId>lombok</artifactId>
-    <optional>true</optional>
-</dependency>
-
-<!-- 测试 -->
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-test</artifactId>
-    <scope>test</scope>
-</dependency>
-```
+| 表名 | 用途 | 关键字段 |
+|------|------|----------|
+| `user_info` | 用户信息（验证码流程） | id, user_name, email(UNIQUE), role, age, country, salary |
+| `users` | 用户账号（JWT 密码登录用，预留） | id, username, password_hash, email, refresh_token |
+| `chat_sessions` | 会话管理 | id, user_id(FK), title, status(ACTIVE/ARCHIVED/DELETED) |
+| `chat_messages` | 消息记录 | id, session_id(FK), role(USER/ASSISTANT/SYSTEM/TOOL), content, message_type |
+| `db_connections` | 外部数据库连接 | id, user_id(FK), db_type, host, port, encrypted_password(AES-128) |
+| `tool_invocations` | Agent 工具调用审计 | id, message_id(FK), tool_name, input_params, output_result, status |
 
 ---
 
-## 四、数据库设计（6张表）
+## 五、API 接口清单（19 个端点）
 
-### 4.1 初始化方式
+### 5.1 公开端点（无需认证）
 
+| # | 方法 | 路径 | 说明 | HTTP |
+|---|------|------|------|------|
+| 1 | GET | `/api/health` | 健康检查，返回 status/version/timestamp | 200 |
+| 2 | POST | `/api/auth/send_code` | 发送登录验证码（邮箱需已注册） | 200 |
+| 3 | POST | `/api/auth/send_register_code` | 发送注册验证码（邮箱需未注册） | 200 |
+| 4 | POST | `/api/auth/login` | 验证码登录 → JWT accessToken + refreshToken | 200 |
+| 5 | POST | `/api/auth/register` | 用户注册 → JWT accessToken + refreshToken | 200 |
+
+**请求示例：**
 ```bash
-# 1. 创建数据库
-mysql -u root -p -e "CREATE DATABASE chatbi_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+# 发送登录验证码
+curl -X POST http://localhost:8080/api/auth/send_code \
+  -H "Content-Type: application/json" \
+  -d '{"email":"jwtuser@test.com"}'
 
-# 2. 执行初始化脚本
-mysql -u root -p chatbi_db < sql/init.sql
+# 登录（验证码从 Redis 获取：redis-cli get "login_code:jwtuser@test.com"）
+curl -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"jwtuser@test.com","code":"123456"}'
+# → {"code":200,"message":"登陆成功","data":{"accessToken":"eyJ...","userId":1,...}}
 ```
 
-### 4.2 表清单
+### 5.2 Chat 模块（JWT 认证）
 
-| 表名 | 用途 | 状态 |
-|------|------|------|
-| `user_info` | 用户信息（Agent验证码流程用） | 当前模块使用 |
-| `users` | 用户账号（JWT密码登录用） | 计划 |
-| `chat_sessions` | 对话会话 | 计划 |
-| `chat_messages` | 对话消息 | 计划 |
-| `db_connections` | 外部数据库连接配置 | 计划 |
-| `tool_invocations` | Agent工具调用审计日志 | 计划 |
+| # | 方法 | 路径 | 说明 |
+|---|------|------|------|
+| 6 | GET | `/api/chat/sessions` | 获取用户会话列表 |
+| 7 | POST | `/api/chat/sessions` | 创建新会话 |
+| 8 | GET | `/api/chat/sessions/{id}/messages` | 获取会话消息历史 |
+| 9 | DELETE | `/api/chat/sessions/{id}` | 软删除会话 |
+| 10 | POST | `/api/chat/send` | **SSE 流式** 发送消息给 Agent |
 
-完整 DDL 见 `sql/init.sql`。
+**SSE 事件流：** `user_saved → thinking → tool_call → sql → tool_result → text → done`
 
-### 4.3 user_info 表（当前核心表）
+### 5.3 DB 连接模块（JWT 认证）
 
-```sql
-CREATE TABLE user_info (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    user_name VARCHAR(50) NOT NULL,
-    email VARCHAR(100) NOT NULL UNIQUE,
-    role VARCHAR(50) DEFAULT 'USER',
-    age INT DEFAULT NULL,
-    country VARCHAR(100) DEFAULT NULL,
-    salary DECIMAL(12,2) DEFAULT NULL,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_user_info_email (email)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-```
+| # | 方法 | 路径 | 说明 |
+|---|------|------|------|
+| 11 | GET | `/api/db/connections` | 列出用户的数据源 |
+| 12 | POST | `/api/db/connections` | 添加数据源（密码 AES 加密） |
+| 13 | PUT | `/api/db/connections/{id}` | 更新数据源 |
+| 14 | DELETE | `/api/db/connections/{id}` | 删除数据源（软删除） |
+| 15 | POST | `/api/db/connections/{id}/test` | 连通性测试（真实 JDBC 连接） |
+| 16 | GET | `/api/db/connections/{id}/schema` | 检索表结构和字段元数据 |
+
+### 5.4 可视化 + 用户（JWT 认证）
+
+| # | 方法 | 路径 | 说明 |
+|---|------|------|------|
+| 17 | POST | `/api/viz/generate` | 生成 ECharts 图表配置（bar/line/pie/scatter/auto） |
+| 18 | GET | `/api/user/profile` | 获取当前用户资料 |
+| 19 | PUT | `/api/user/profile` | 更新用户资料（age/country/salary/email） |
 
 ---
 
-## 五、配置文件
+## 六、JWT 认证机制
 
-### 5.1 application.yml（主配置）
-
-```yaml
-spring:
-  application:
-    name: swpu-agent
-  profiles:
-    active: dev
-```
-
-### 5.2 application-dev.yml（开发环境）
-
-```yaml
-spring:
-  datasource:
-    url: jdbc:mysql://localhost:3306/chatbi_db?useUnicode=true&characterEncoding=utf8mb4&serverTimezone=Asia/Shanghai
-    username: root
-    password: ${DB_PASSWORD:root}
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    hikari:
-      maximum-pool-size: 10
-      minimum-idle: 5
-  data:
-    redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:}
-      database: 0
-      timeout: 3000ms
-      lettuce:
-        pool:
-          max-active: 8
-          max-idle: 8
-          min-idle: 0
-
-mybatis:
-  mapper-locations: classpath:mapper/*.xml
-  type-aliases-package: com.swpuagent.entity
-  configuration:
-    map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
-
-jwt:
-  secret-key: ${JWT_SECRET_KEY:default-jwt-secret-key-at-least-32-chars-long}
-  access-token-expire-minutes: 30
-  refresh-token-expire-days: 7
-
-server:
-  port: ${SERVER_PORT:8080}
-
-logging:
-  level:
-    com.swpuagent: DEBUG
-    root: WARN
-```
-
-> 所有敏感参数通过 `${ENV_VAR:default}` 格式支持环境变量覆盖，clone 后直接可用默认值运行。
+- **算法**: HS256，密钥配置 `jwt.secret-key`（默认 32 字符）
+- **Access Token**: 30 分钟过期，payload 包含 `sub`(userId) + `role`
+- **Refresh Token**: 7 天过期，128 字符随机十六进制（非 JWT）
+- **Filter 机制**: `JwtAuthFilter` (Servlet Filter) 仅拦截 `/api/chat/*`、`/api/db/*`、`/api/viz/*`、`/api/user/*`
+- **使用方式**: 请求头 `Authorization: Bearer <token>`，校验通过后设置 `request.userId` + `request.role` 属性
+- 公开路径 (`/api/auth/*`, `/api/health`) 直接放行
 
 ---
 
-## 六、核心代码详解
-
-### 6.1 统一响应格式
-
-`dto/response/ApiResponse.java` — 所有API返回此格式：
-
-```java
-@Data
-@NoArgsConstructor
-@AllArgsConstructor
-@JsonInclude(JsonInclude.Include.NON_NULL)
-public class ApiResponse<T> {
-    private int code;
-    private String message;
-    private T data;
-
-    public static <T> ApiResponse<T> success(String message, T data) { ... }
-    public static <T> ApiResponse<T> success(T data) { ... }
-    public static <T> ApiResponse<T> created(String message, T data) { ... }
-    public static <T> ApiResponse<T> error(int code, String message) { ... }
-    public static <T> ApiResponse<T> error(int code, String message, T data) { ... }
-}
-```
-
-### 6.2 异常体系
+## 七、异常处理体系
 
 ```
 AppException (statusCode + message)
-├── NotFoundException           → HTTP 404
+├── ValidationException         → HTTP 400  "邮箱未注册"
 ├── AuthenticationException     → HTTP 401
 ├── PermissionDeniedException   → HTTP 403
-├── ValidationException         → HTTP 400
+├── NotFoundException           → HTTP 404  "会话不存在"
 ├── ConflictException           → HTTP 409
 └── DatabaseQueryException      → HTTP 422
+
+GlobalExceptionHandler (@RestControllerAdvice):
+├── AppException 子类           → 对应 HTTP 状态码
+├── MethodArgumentNotValidException → 400 + 字段级详情
+├── HttpMessageNotReadableException → 400  "Invalid request body"
+├── HttpRequestMethodNotSupportedException → 405  "Method not allowed"
+├── NoHandlerFoundException         → 404  "Resource not found"
+└── Exception (兜底)                → 500  "Internal server error"
 ```
 
-### 6.3 全局异常处理
+所有用户可见错误消息使用中文。
 
-`GlobalExceptionHandler` 使用 `@RestControllerAdvice` 统一拦截：
-- `AppException` → 返回对应的 HTTP 状态码
-- `MethodArgumentNotValidException` → 400 + 字段级校验详情
-- `Exception` → 500（stacktrace 记日志，不返回前端）
+---
 
-### 6.4 验证码 Redis 服务
+## 八、统一响应格式
+
+```json
+// 成功
+{"code": 200, "message": "success", "data": { ... }}
+
+// 业务异常
+{"code": 400, "message": "邮箱未注册"}
+
+// 校验失败
+{"code": 400, "message": "Validation error", "data": "email: 邮箱不能为空"}
+
+// 认证失败
+{"code": 401, "message": "Missing or invalid Authorization header"}
+
+// 服务端错误
+{"code": 500, "message": "Internal server error"}
+```
+
+---
+
+## 九、验证码流程
 
 ```
-Key Schema:
-  login_code:{email}    → 6-digit code, TTL=300s
-  register_code:{email} → 6-digit code, TTL=300s
+Redis Key 规范:
+  login_code:{email}     → 6位数字, TTL=300s
+  register_code:{email}  → 6位数字, TTL=300s
 
 生命周期:
-  send_xxx_code → SET key code EX 300
-  login/register → GET key → compare → DELETE key (on success)
-  expire → Redis auto-evict after 300s
+  发送验证码 → SET key code EX 300
+  登录/注册  → GET key → 比对 → DELETE key (成功后)
+  超时      → Redis 自动淘汰
 ```
 
-### 6.5 AuthService 业务规则
+**业务规则:**
 
-| 操作 | 规则 | 错误消息 |
-|------|------|----------|
-| sendLoginCode | 邮箱必须存在于 user_info | "邮箱未注册" |
-| sendRegisterCode | 邮箱必须不存在于 user_info | "邮箱已注册，请直接登录" |
-| loginWithCode | Redis 中验证码匹配 | "验证码错误或已过期" |
-| register | 验证码匹配 + 二次检查邮箱唯一性 | "验证码错误或已过期" / "邮箱已被注册" |
-
-### 6.6 Agent 工具
-
-| 工具 | 文件 | 功能 |
-|------|------|------|
-| MysqlTool | `agent/tool/MysqlTool.java` | 查询 user_info 表（仅 SELECT） |
-| SendEmailTool | `agent/tool/SendEmailTool.java` | 发送验证码邮件（占位，待接入 SMTP） |
-
-### 6.7 Agent 决策流程
-
-```
-POST /api/auth/send_code? (login)
-    → Agent: intent="login"
-    → MysqlTool.queryEmail → email EXISTS?
-        → YES: SendEmailTool.send → Redis.saveLoginCode → 200 "发送成功"
-        → NO:  throw ValidationException("邮箱未注册")
-
-POST /api/auth/send_register_code? (register)
-    → Agent: intent="register"
-    → MysqlTool.queryEmail → email EXISTS?
-        → NO:  SendEmailTool.send → Redis.saveRegisterCode → 200 "发送成功"
-        → YES: throw ValidationException("邮箱已注册，请直接登录")
-```
+| 操作 | 前置条件 | 错误消息 |
+|------|----------|----------|
+| sendLoginCode | email 必须存在于 user_info | "邮箱未注册" |
+| sendRegisterCode | email 必须不存在于 user_info | "邮箱已注册，请直接登录" |
+| loginWithCode | Redis 验证码匹配 | "验证码错误或已过期" |
+| register | 验证码匹配 + 二次检查唯一性 | "验证码错误或已过期" / "邮箱已被注册" |
 
 ---
 
-## 七、API 接口清单
+## 十、DB 连接密码加密
 
-### 7.1 已实现接口
-
-| 方法 | 路径 | 认证 | 说明 |
-|------|------|------|------|
-| GET | `/api/health` | 无 | 健康检查 |
-| POST | `/api/auth/send_code` | 无 | 发送登录验证码 |
-| POST | `/api/auth/send_register_code` | 无 | 发送注册验证码 |
-| POST | `/api/auth/login` | 无 | 验证码登录 |
-| POST | `/api/auth/register` | 无 | 用户注册 |
-
-### 7.2 计划实现接口
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/auth/refresh` | 刷新Token |
-| POST | `/api/auth/logout` | 登出 |
-| GET | `/api/auth/me` | 获取当前用户 |
-| POST | `/api/chat/send` | Agent对话（SSE流式） |
-| GET | `/api/chat/sessions` | 会话列表 |
-| POST | `/api/chat/sessions` | 创建会话 |
-| GET | `/api/chat/sessions/{id}/messages` | 会话消息 |
-| DELETE | `/api/chat/sessions/{id}` | 删除会话 |
-| POST | `/api/db/connections` | 添加DB连接 |
-| GET | `/api/db/connections` | 列出DB连接 |
-| POST | `/api/viz/generate` | 生成图表 |
+- 算法：AES-128，密钥 `swpu-agent-2026!`（16 字节）
+- `DatabaseConnectionService` 写入前加密，读取时解密
+- 响应中 `encryptedPassword` 字段不返回原密码（敏感信息遮蔽）
 
 ---
 
-## 八、环境变量清单
+## 十一、可视化自动检测规则
 
-```bash
-# 数据库
-DB_HOST=localhost
-DB_PORT=3306
-DB_PASSWORD=root
+`POST /api/viz/generate` 在 `chartType=auto` 时的自动判断：
 
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=
-
-# JWT
-JWT_SECRET_KEY=your-jwt-secret-at-least-32-chars
-
-# LLM (Agent用)
-LLM_PROVIDER=deepseek
-LLM_API_KEY=your_api_key
-LLM_BASE_URL=https://api.deepseek.com/v1
-LLM_MODEL=deepseek-chat
-
-# SMTP (邮件用)
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_USERNAME=your_email
-SMTP_PASSWORD=your_password
-```
+| 数据特征 | 检测结果 |
+|----------|----------|
+| 1 日期列 + 1 数值列 | line (折线图) |
+| 1 文本列 + 1 数值列 (≤10 条) | pie (饼图) |
+| 1 文本列 + 1 数值列 (>10 条) | bar (柱状图) |
+| 1 文本列 + 多数值列 | bar (分组柱状图) |
+| 2 数值列 | scatter (散点图) |
+| 其他 | table (表格) |
 
 ---
 
-## 九、可复现操作步骤
+## 十二、编码约定
 
-### 9.1 Clone & Build
-
-```bash
-git clone git@git.code.tencent.com:swpu-agent/backend.git
-cd backend
-mvn clean compile        # 下载依赖 + 编译（无需数据库即可通过）
-```
-
-### 9.2 初始化数据库
-
-```bash
-mysql -u root -p -e "CREATE DATABASE chatbi_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-mysql -u root -p chatbi_db < sql/init.sql
-```
-
-### 9.3 配置 & 启动
-
-```bash
-# 方式一：使用默认配置（需本地 MySQL + Redis）
-mvn spring-boot:run
-
-# 方式二：通过环境变量覆盖
-export DB_PASSWORD=your_real_password
-mvn spring-boot:run
-```
-
-### 9.4 验证
-
-```bash
-# 健康检查
-curl http://localhost:8080/api/health
-# → {"code":200,"message":"success","data":{"status":"UP",...}}
-
-# 发送注册验证码
-curl -X POST http://localhost:8080/api/auth/send_register_code \
-  -H "Content-Type: application/json" \
-  -d '{"email":"new@example.com"}'
-# → {"code":200,"message":"发送成功","data":null}
-
-# 注册（code需与Redis中一致，目前log输出到控制台）
-curl -X POST http://localhost:8080/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"new@example.com","code":"123456","userName":"Tom"}'
-
-# 登录
-curl -X POST http://localhost:8080/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@example.com","code":"123456"}'
-```
+- MyBatis 纯注解模式（`@Select`, `@Insert`），不使用 XML mapper
+- Lombok `@Data` 用于所有 Entity/DTO，`@RequiredArgsConstructor` 用于 Service
+- 所有接口返回 `ApiResponse<T>` 包装，**绝不**返回裸实体
+- `application-dev.yml` 激活 dev profile，所有密钥通过 `${ENV_VAR:default}` 注入
+- 异常消息中文化（用户面向）
 
 ---
 
-## 十、编码实施顺序
+## 十三、实施阶段
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| Phase 1 | 基础框架：yml配置、ApiResponse、异常类、GlobalExceptionHandler、CorsConfig、RedisConfig | ✅ 完成 |
-| Phase 2 | 登录注册：DTO、Entity、Mapper、VerificationCodeService、AuthService、AuthController | ✅ 完成 |
-| Phase 3 | Agent工具：MysqlTool、SendEmailTool | ✅ 完成 |
-| Phase 4 | JWT + 安全：JwtUtil、JwtAuthFilter | ⏳ 计划 |
-| Phase 5 | 扩展模块：Chat、DB连接、可视化 | ⏳ 计划 |
+| Phase 1 | 基础框架：配置、ApiResponse、异常体系、CORS、Redis | ✅ |
+| Phase 2 | 认证模块：DTO、Entity、Mapper、验证码、AuthService | ✅ |
+| Phase 3 | Agent 工具：MysqlTool、SendEmailTool | ✅ |
+| Phase 4 | JWT 安全：JwtUtil(HS256)、JwtAuthFilter、FilterConfig | ✅ |
+| Phase 5 | 扩展模块：Chat(SSE)、DB 连接、可视化、用户资料 | ✅ |
+| Fix | GlobalExceptionHandler 补全 3 种异常 + FilterConfig 精确路径 | ✅ |
 
 ---
 
-## 十一、文件清单（共27个源文件）
+## 十四、测试报告 (2026-06-06)
 
-```
-已实现文件 (24 个 .java + 2 个 .yml + 1 个 .sql = 27):
-  src/main/resources/application.yml
-  src/main/resources/application-dev.yml
-  sql/init.sql
-  src/main/java/.../SwpuAgentApplication.java
-  src/main/java/.../controller/AuthController.java
-  src/main/java/.../controller/HealthController.java
-  src/main/java/.../service/AuthService.java
-  src/main/java/.../service/VerificationCodeService.java
-  src/main/java/.../mapper/UserInfoMapper.java
-  src/main/java/.../entity/UserInfo.java
-  src/main/java/.../dto/request/SendCodeRequest.java
-  src/main/java/.../dto/request/LoginRequest.java
-  src/main/java/.../dto/request/RegisterRequest.java
-  src/main/java/.../dto/response/ApiResponse.java
-  src/main/java/.../dto/response/PageResponse.java
-  src/main/java/.../config/CorsConfig.java
-  src/main/java/.../config/RedisConfig.java
-  src/main/java/.../agent/tool/MysqlTool.java
-  src/main/java/.../agent/tool/SendEmailTool.java
-  src/main/java/.../common/GlobalExceptionHandler.java
-  src/main/java/.../common/exception/AppException.java
-  src/main/java/.../common/exception/NotFoundException.java
-  src/main/java/.../common/exception/AuthenticationException.java
-  src/main/java/.../common/exception/PermissionDeniedException.java
-  src/main/java/.../common/exception/ValidationException.java
-  src/main/java/.../common/exception/ConflictException.java
-  src/main/java/.../common/exception/DatabaseQueryException.java
+### 端点测试：19/19 通过 ✅
+
+| 模块 | 通过 | 失败 |
+|------|------|------|
+| Auth (公开) | 5 | 0 |
+| Chat (JWT) | 5 | 0 |
+| DB Connections (JWT) | 6 | 0 |
+| Visualization (JWT) | 1 | 0 |
+| User Profile (JWT) | 2 | 0 |
+| **合计** | **19** | **0** |
+
+### 边界探测：12/12 通过 ✅
+
+| 场景 | 预期 | 实际 |
+|------|------|------|
+| 无 Authorization header | 401 | ✅ 401 |
+| 无效 token | 401 | ✅ 401 |
+| 缺少必填字段 | 400 + 字段详情 | ✅ |
+| 非法邮箱格式 | 400 | ✅ |
+| 错误 HTTP 方法 | 405 | ✅ |
+| 不存在的路由 | 404 | ✅ |
+| 非法 JSON body | 400 | ✅ |
+| 未注册邮箱 | 400 "邮箱未注册" | ✅ |
+| 重复注册 | 400 "邮箱已注册" | ✅ |
+| 错误验证码 | 400 "验证码错误或已过期" | ✅ |
+| 缺少验证码字段 | 400 + 字段详情 | ✅ |
+| 受保护路由错误方法 | 405 | ✅ |
+
+---
+
+## 十五、待完成
+
+- [ ] SMTP 真实邮件发送（SendEmailTool 仅 console 输出验证码）
+- [ ] LangChain4j Agent 接入（当前返回模拟数据）
+- [ ] 单元测试和集成测试（仅有一个默认 context-load 测试）
+- [ ] Refresh Token 端点（`POST /api/auth/refresh`）
+- [ ] 登出端点（`POST /api/auth/logout`）
+- [ ] Git push（SSH 密钥密码问题阻止 push）
+
+---
+
+## 十六、环境变量
+
+```bash
+# 数据库
+DB_PASSWORD=root              # 默认: root
+
+# Redis
+REDIS_HOST=localhost           # 默认: localhost
+REDIS_PORT=6379                # 默认: 6379
+REDIS_PASSWORD=                # 默认: (空)
+
+# JWT
+JWT_SECRET_KEY=...             # 默认: default-jwt-secret-key-at-least-32-chars-long
+
+# 服务端口
+SERVER_PORT=8080               # 默认: 8080
 ```
