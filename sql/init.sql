@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     INDEX idx_sessions_user_id (user_id),
     INDEX idx_sessions_status (status),
     INDEX idx_sessions_updated (user_id, updated_at DESC),
-    CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES user_info(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='Chat conversation sessions';
 
@@ -94,7 +94,7 @@ CREATE TABLE IF NOT EXISTS db_connections (
     INDEX idx_connections_user (user_id),
     INDEX idx_connections_type (db_type),
     UNIQUE KEY uk_user_connection_name (user_id, name),
-    CONSTRAINT fk_connections_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    CONSTRAINT fk_connections_user FOREIGN KEY (user_id) REFERENCES user_info(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
 COMMENT='User-managed external database connection configurations';
 
