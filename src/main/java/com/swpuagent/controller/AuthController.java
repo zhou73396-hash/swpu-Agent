@@ -4,6 +4,7 @@ import com.swpuagent.dto.request.LoginRequest;
 import com.swpuagent.dto.request.RegisterRequest;
 import com.swpuagent.dto.request.SendCodeRequest;
 import com.swpuagent.dto.response.ApiResponse;
+import com.swpuagent.dto.response.LoginResponse;
 import com.swpuagent.service.AuthService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -41,9 +42,9 @@ public class AuthController {
      * POST /api/auth/login
      */
     @PostMapping("/login")
-    public ApiResponse<String> login(@Valid @RequestBody LoginRequest request) {
-        String token = authService.loginWithCode(request.getEmail(), request.getCode());
-        return ApiResponse.success("登陆成功", token);
+    public ApiResponse<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
+        LoginResponse resp = authService.loginWithCode(request.getEmail(), request.getCode());
+        return ApiResponse.success("登陆成功", resp);
     }
 
     /**
@@ -51,9 +52,9 @@ public class AuthController {
      * POST /api/auth/register
      */
     @PostMapping("/register")
-    public ApiResponse<String> register(@Valid @RequestBody RegisterRequest request) {
-        String token = authService.register(
+    public ApiResponse<LoginResponse> register(@Valid @RequestBody RegisterRequest request) {
+        LoginResponse resp = authService.register(
                 request.getEmail(), request.getCode(), request.getUserName());
-        return ApiResponse.success("注册成功", token);
+        return ApiResponse.success("注册成功", resp);
     }
 }
