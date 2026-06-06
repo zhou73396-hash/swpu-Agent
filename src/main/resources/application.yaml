@@ -1,3 +1,5 @@
 spring:
   application:
     name: swpu-agent
+  profiles:
+    active: dev
