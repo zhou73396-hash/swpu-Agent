@@ -9,9 +9,16 @@ mvn clean compile              # compile only (no DB needed)
 mvn spring-boot:run            # run on localhost:8080
 ```
 
-Requires MySQL 8.x + Redis 6.x at runtime. Database init: `mysql -u root -p chatbi_db < sql/init.sql`.
+Requires MySQL 8.x + Redis 6.x at runtime.
+
+```bash
+docker-compose up -d              # one-click MySQL + Redis (or use local installs)
+mysql -u root -proot < sql/init.sql  # init database (auto-runs with docker-compose)
+```
 
 Default credentials: MySQL `root/root`, Redis `localhost:6379` (no password). All secrets use `${ENV_VAR:default}` in `application-dev.yml`.
+
+**Python Agent** (`agent-py/`, port 8000) is required for the Chat module — it runs the real LangChain/LangGraph AI agents. Without it, Chat returns errors but Auth/Sessions/DB/Viz still work.
 
 ## Architecture
 
@@ -42,7 +49,7 @@ common/GlobalExceptionHandler (@RestControllerAdvice — catches 7 exception typ
 ### Chat — `GET|POST|DELETE /api/chat/*` (JWT required)
 - `GET /sessions` — list user's sessions; `POST /sessions` — create session
 - `GET /sessions/{id}/messages` — message history; `DELETE /sessions/{id}` — soft-delete
-- `POST /send` — SSE streaming (`text/event-stream`), async Agent pipeline with events: `user_saved → thinking → tool_call → sql → tool_result → text → done`
+- `POST /send` — SSE streaming (`text/event-stream`), async Agent pipeline with events: `user_saved → thinking → text → (chart) → done`
 
 ### DB Connections — `/api/db/*` (JWT required)
 - Full CRUD at `/connections` + `POST /connections/{id}/test` (real JDBC ping)
@@ -95,9 +102,18 @@ Exception messages are Chinese (user-facing).
 - Configuration in `application.yaml` activates `dev` profile by default
 - Verification codes stored in Redis: `login_code:{email}` / `register_code:{email}`, TTL=300s
 
+## Python Agent Integration
+
+Agent calls are delegated to the Python FastAPI service (`agent-py/`) via `AgentClient`:
+- `AgentClient.chatStream()` calls `GET /chat?question=...&user_id=...` on the Python service
+- The Python service runs real LangChain/LangGraph agents (qwen3-max via DashScope)
+- Java relays the SSE stream directly to the frontend — `user_saved → thinking → text → done`
+- Python expects `user_id` to be the user's **email** (its permission middleware queries `SELECT role FROM user_info WHERE email = ?`)
+- Java's `AgentService.lookupEmail()` resolves `userId → email` before calling Python
+- Auth (send_code / send_register_code) is pure Java with Redis — 0 LLM cost
+
 ## What's Not Yet Built
 
 - Real SMTP email delivery (SendEmailTool only logs to console)
-- LangChain4j integration (Agent currently returns mock/simulated responses)
 - Tests beyond the default context-load test
 - Refresh token endpoint (`POST /api/auth/refresh`)
