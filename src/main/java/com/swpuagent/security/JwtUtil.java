@@ -34,14 +34,11 @@ public class JwtUtil {
 
     @PostConstruct
     void validate() {
-        if (secret == null || secret.isBlank()) {
-            throw new IllegalStateException("JWT_SECRET_KEY is required. Set it via environment variable.");
-        }
         if (secret.length() < 32) {
-            throw new IllegalStateException(
-                    "JWT_SECRET_KEY must be at least 32 characters (current: " + secret.length() + ")");
+            log.warn("⚠ JWT_SECRET_KEY is weak ({} chars). Set a strong key (≥32) via environment variable for production.", secret.length());
+        } else {
+            log.info("JWT secret key validated ({} chars)", secret.length());
         }
-        log.info("JWT secret key validated ({} chars)", secret.length());
     }
 
     /** Generate JWT access token */

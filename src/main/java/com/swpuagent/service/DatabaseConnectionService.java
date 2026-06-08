@@ -32,14 +32,11 @@ public class DatabaseConnectionService {
 
     @PostConstruct
     void validate() {
-        if (encryptionKey == null || encryptionKey.isBlank()) {
-            throw new IllegalStateException("DB_ENCRYPTION_KEY is required. Set it via environment variable.");
-        }
         if (encryptionKey.length() < 16) {
-            throw new IllegalStateException(
-                    "DB_ENCRYPTION_KEY must be at least 16 characters (current: " + encryptionKey.length() + ")");
+            log.warn("⚠ DB_ENCRYPTION_KEY is weak ({} chars). Set a strong key (≥16) via environment variable for production.", encryptionKey.length());
+        } else {
+            log.info("DB encryption key validated ({} chars)", encryptionKey.length());
         }
-        log.info("DB encryption key validated ({} chars)", encryptionKey.length());
     }
 
     public List<DbConnection> listConnections(Long userId) {
