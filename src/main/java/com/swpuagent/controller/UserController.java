@@ -6,7 +6,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
-import java.math.BigDecimal;
 import java.util.Map;
 
 @RestController
@@ -29,10 +28,7 @@ public class UserController {
                                                            @RequestBody Map<String, Object> body) {
         Long userId = (Long) req.getAttribute("userId");
         String email = (String) body.get("email");
-        Integer age = body.get("age") != null ? ((Number) body.get("age")).intValue() : null;
-        String country = (String) body.get("country");
-        BigDecimal salary = body.get("salary") != null ?
-                new BigDecimal(body.get("salary").toString()) : null;
-        return ApiResponse.success(userService.updateProfile(userId, email, age, country, salary));
+        String userName = (String) body.get("userName");
+        return ApiResponse.success(userService.updateProfile(userId, email, userName));
     }
 }
