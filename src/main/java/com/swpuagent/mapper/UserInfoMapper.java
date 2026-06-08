@@ -6,7 +6,7 @@ import org.apache.ibatis.annotations.*;
 @Mapper
 public interface UserInfoMapper {
 
-    @Select("SELECT id, user_name, email, role, age, country, salary, created_at, updated_at " +
+    @Select("SELECT id, user_name, email, role, age, country, salary " +
             "FROM user_info WHERE email = #{email}")
     UserInfo findByEmail(@Param("email") String email);
 
@@ -18,11 +18,11 @@ public interface UserInfoMapper {
     @Select("SELECT COUNT(*) FROM user_info WHERE email = #{email}")
     int countByEmail(@Param("email") String email);
 
-    @Select("SELECT id, user_name, email, role, age, country, salary, created_at, updated_at " +
+    @Select("SELECT id, user_name, email, role, age, country, salary " +
             "FROM user_info WHERE id = #{id}")
     UserInfo findById(@Param("id") Long id);
 
     @Update("UPDATE user_info SET email=#{email}, age=#{age}, country=#{country}, " +
-            "salary=#{salary}, updated_at=NOW() WHERE id=#{id}")
+            "salary=#{salary} WHERE id=#{id}")
     int update(UserInfo userInfo);
 }

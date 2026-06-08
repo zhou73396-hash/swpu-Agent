@@ -12,13 +12,13 @@ mvn spring-boot:run            # run on localhost:8080
 Requires MySQL 8.x + Redis 6.x at runtime.
 
 ```bash
-docker-compose up -d              # one-click MySQL + Redis (or use local installs)
-mysql -u root -proot < sql/init.sql  # init database (auto-runs with docker-compose)
+docker-compose up -d              # one-click MySQL + Redis
+mysql -u root -proot < sql/init.sql  # init everything: agent DB + all tables + test data
 ```
 
 Default credentials: MySQL `root/root`, Redis `localhost:6379` (no password). All secrets use `${ENV_VAR:default}` in `application-dev.yml`.
 
-**Python Agent** (`agent-py/`, port 8000) is required for the Chat module — it runs the real LangChain/LangGraph AI agents. Without it, Chat returns errors but Auth/Sessions/DB/Viz still work.
+**Python Agent** (`agent-py/`, port 8000) is required for Chat — it runs the real LangChain/LangGraph AI agents. Without it, Chat errors but Auth/Sessions/DB/Viz still work.
 
 ## Architecture
 
@@ -92,7 +92,19 @@ Exception messages are Chinese (user-facing).
 
 ## Database
 
-6 tables in `chatbi_db`: `user_info`, `users`, `chat_sessions`, `chat_messages`, `db_connections`, `tool_invocations`. Full DDL in `sql/init.sql`.
+Java and Python share the `agent` database. Run `sql/init.sql` once to create everything.
+
+| Table | Purpose |
+|-------|---------|
+| `user_info` | User info + role permissions (Python Agent depends on this) |
+| `users` | JWT login accounts |
+| `chat_sessions` | Chat sessions |
+| `chat_messages` | Chat messages |
+| `db_connections` | External DB connections |
+| `tool_invocations` | Agent tool audit log |
+| `customer`, `products`, `orders`, `customer_behavior`, `sales` | Business data (Python SQL Agent queries these) |
+
+Full DDL + test data in `sql/init.sql`.
 
 ## Conventions
 

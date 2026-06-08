@@ -5,7 +5,7 @@ spring:
     resources:
       add-mappings: false
   datasource:
-    url: jdbc:mysql://localhost:3306/chatbi_db?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    url: jdbc:mysql://localhost:3306/agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
     username: root
     password: ${DB_PASSWORD:root}
     driver-class-name: com.mysql.cj.jdbc.Driver
