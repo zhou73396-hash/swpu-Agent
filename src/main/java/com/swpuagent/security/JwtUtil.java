@@ -3,29 +3,45 @@ package com.swpuagent.security;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.Map;
 
+@Slf4j
 @Component
 public class JwtUtil {
 
     private final SecretKey key;
     private final long accessTokenExpireMs;
     private final long refreshTokenExpireMs;
+    private final String secret;
 
     public JwtUtil(
             @Value("${jwt.secret-key}") String secret,
             @Value("${jwt.access-token-expire-minutes}") long accessMinutes,
             @Value("${jwt.refresh-token-expire-days}") long refreshDays) {
+        this.secret = secret;
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.accessTokenExpireMs = accessMinutes * 60 * 1000;
         this.refreshTokenExpireMs = refreshDays * 24 * 60 * 60 * 1000;
+    }
+
+    @PostConstruct
+    void validate() {
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalStateException("JWT_SECRET_KEY is required. Set it via environment variable.");
+        }
+        if (secret.length() < 32) {
+            throw new IllegalStateException(
+                    "JWT_SECRET_KEY must be at least 32 characters (current: " + secret.length() + ")");
+        }
+        log.info("JWT secret key validated ({} chars)", secret.length());
     }
 
     /** Generate JWT access token */

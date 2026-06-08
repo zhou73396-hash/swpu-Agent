@@ -35,9 +35,12 @@ mybatis:
     log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
 
 jwt:
-  secret-key: ${JWT_SECRET_KEY:default-jwt-secret-key-at-least-32-chars-long}
+  secret-key: ${JWT_SECRET_KEY}
   access-token-expire-minutes: 30
   refresh-token-expire-days: 7
+
+db:
+  encryption-key: ${DB_ENCRYPTION_KEY}
 
 server:
   port: ${SERVER_PORT:8080}

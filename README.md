@@ -45,11 +45,19 @@ curl http://localhost:8080/api/health
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
+| `JWT_SECRET_KEY` | **必需** (≥32字符) | JWT 签名密钥，启动时校验 |
+| `DB_ENCRYPTION_KEY` | **必需** (≥16字符) | AES 数据库密码加密密钥 |
 | `DB_PASSWORD` | `root` | MySQL 密码 |
 | `REDIS_HOST` | `localhost` | Redis 地址 |
 | `REDIS_PASSWORD` | (空) | Redis 密码 |
-| `JWT_SECRET_KEY` | 内置默认值 | JWT 签名密钥 |
 | `AGENT_PYTHON_URL` | `http://localhost:8000` | Python Agent 地址 |
+
+```bash
+# 最小启动配置
+export JWT_SECRET_KEY="your-strong-key-at-least-32-characters-long!!"
+export DB_ENCRYPTION_KEY="your-16byte-key!!"
+mvn spring-boot:run
+```
 
 ## API 端点
 

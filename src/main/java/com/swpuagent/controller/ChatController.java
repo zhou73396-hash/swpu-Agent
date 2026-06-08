@@ -9,8 +9,8 @@ import com.swpuagent.service.AgentService;
 import com.swpuagent.service.ChatService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -19,15 +19,24 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 @Slf4j
 @RestController
 @RequestMapping("/api/chat")
-@RequiredArgsConstructor
 public class ChatController {
 
     private final ChatService chatService;
     private final AgentService agentService;
+    private final Executor sseExecutor;
+
+    public ChatController(ChatService chatService,
+                          AgentService agentService,
+                          @Qualifier("sseExecutor") Executor sseExecutor) {
+        this.chatService = chatService;
+        this.agentService = agentService;
+        this.sseExecutor = sseExecutor;
+    }
 
     /** List sessions — GET /api/chat/sessions */
     @GetMapping("/sessions")
@@ -85,11 +94,9 @@ public class ChatController {
 
                         sendSse(emitter, eventType, eventData);
 
-                        // Collect text content for DB persistence
                         if ("text".equals(eventType)) {
                             fullAnswer.append(eventData);
                         }
-                        // Capture chart if present
                         if ("chart".equals(eventType)) {
                             chart[0] = eventData;
                         }
@@ -98,7 +105,7 @@ public class ChatController {
                     }
                 });
 
-                // Save assistant message with real AI response
+                // Save assistant message
                 String messageType = (chart[0] != null) ? "CHART" : "TEXT";
                 String content = fullAnswer.length() > 0 ? fullAnswer.toString() : "(empty response)";
                 chatService.saveAssistantMessage(request.getSessionId(),
@@ -114,7 +121,7 @@ public class ChatController {
                     emitter.completeWithError(ex);
                 }
             }
-        });
+        }, sseExecutor);  // isolated SSE thread pool, not ForkJoinPool
 
         return emitter;
     }

@@ -32,6 +32,12 @@ public class ChatService {
         session.setDbConnectionId(dbConnectionId);
         session.setTitle(title != null ? title : "New Chat");
         sessionMapper.insert(session);
+        // Backfill defaults that MyBatis doesn't reload after insert
+        session.setStatus("ACTIVE");
+        session.setMessageCount(0);
+        session.setTotalTokensUsed(0);
+        session.setCreatedAt(java.time.LocalDateTime.now());
+        session.setUpdatedAt(session.getCreatedAt());
         log.info("Session created: id={}, userId={}", session.getId(), userId);
         return session;
     }

@@ -3,8 +3,9 @@ package com.swpuagent.service;
 import com.swpuagent.common.exception.NotFoundException;
 import com.swpuagent.entity.DbConnection;
 import com.swpuagent.mapper.DbConnectionMapper;
-import lombok.RequiredArgsConstructor;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import javax.crypto.Cipher;
@@ -18,11 +19,28 @@ import java.util.*;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class DatabaseConnectionService {
 
     private final DbConnectionMapper mapper;
-    private static final String ENCRYPTION_KEY = "swpu-agent-2026!"; // 16 bytes for AES
+    private final String encryptionKey;
+
+    public DatabaseConnectionService(DbConnectionMapper mapper,
+                                      @Value("${db.encryption-key}") String encryptionKey) {
+        this.mapper = mapper;
+        this.encryptionKey = encryptionKey;
+    }
+
+    @PostConstruct
+    void validate() {
+        if (encryptionKey == null || encryptionKey.isBlank()) {
+            throw new IllegalStateException("DB_ENCRYPTION_KEY is required. Set it via environment variable.");
+        }
+        if (encryptionKey.length() < 16) {
+            throw new IllegalStateException(
+                    "DB_ENCRYPTION_KEY must be at least 16 characters (current: " + encryptionKey.length() + ")");
+        }
+        log.info("DB encryption key validated ({} chars)", encryptionKey.length());
+    }
 
     public List<DbConnection> listConnections(Long userId) {
         return mapper.findByUserId(userId);
@@ -141,7 +159,7 @@ public class DatabaseConnectionService {
 
     private String encrypt(String plain) {
         try {
-            SecretKeySpec key = new SecretKeySpec(ENCRYPTION_KEY.getBytes(StandardCharsets.UTF_8), "AES");
+            SecretKeySpec key = new SecretKeySpec(encryptionKey.getBytes(StandardCharsets.UTF_8), "AES");
             Cipher cipher = Cipher.getInstance("AES");
             cipher.init(Cipher.ENCRYPT_MODE, key);
             return Base64.getEncoder().encodeToString(cipher.doFinal(plain.getBytes()));
@@ -152,7 +170,7 @@ public class DatabaseConnectionService {
 
     private String decrypt(String encrypted) {
         try {
-            SecretKeySpec key = new SecretKeySpec(ENCRYPTION_KEY.getBytes(StandardCharsets.UTF_8), "AES");
+            SecretKeySpec key = new SecretKeySpec(encryptionKey.getBytes(StandardCharsets.UTF_8), "AES");
             Cipher cipher = Cipher.getInstance("AES");
             cipher.init(Cipher.DECRYPT_MODE, key);
             return new String(cipher.doFinal(Base64.getDecoder().decode(encrypted)));
