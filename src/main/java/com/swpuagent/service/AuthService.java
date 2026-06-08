@@ -21,7 +21,7 @@ public class AuthService {
     private static final long ACCESS_TOKEN_EXPIRE_SECONDS = 30 * 60; // 30 minutes
 
     /**
-     * Send login verification code.
+     * Send login verification code. Pure Java, 0 LLM cost.
      * Rule: email MUST already exist in user_info table.
      */
     public void sendLoginCode(String email) {
@@ -35,7 +35,7 @@ public class AuthService {
     }
 
     /**
-     * Send registration verification code.
+     * Send registration verification code. Pure Java, 0 LLM cost.
      * Rule: email MUST NOT already exist in user_info table.
      */
     public void sendRegisterCode(String email) {

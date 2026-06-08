@@ -1,96 +1,69 @@
 package com.swpuagent.service;
 
-import com.swpuagent.entity.ChatMessage;
+import com.swpuagent.agent.AgentClient;
+import com.swpuagent.entity.UserInfo;
+import com.swpuagent.mapper.UserInfoMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
 /**
- * Agent orchestration service — placeholder for LangChain4j integration.
- * Currently simulates the ReAct pattern (think → act → observe → respond)
- * with mock responses. Replace with real LLM calls when integrating LangChain4j.
+ * Agent orchestration service — delegates to Python Agent service (FastAPI).
+ * <p>
+ * The Python /chat endpoint expects user_id to be the user's email (used
+ * by its permission middleware: SELECT role FROM user_info WHERE email = ?).
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class AgentService {
 
+    private final AgentClient agentClient;
+    private final UserInfoMapper userInfoMapper;
+
     /**
-     * Process a user message through the Agent pipeline.
+     * Process a user message through the real Python AI Agent pipeline.
      *
      * @param userMessage the user's natural language question
-     * @param sessionId   the chat session context
+     * @param sessionId   the chat session context (for logging)
+     * @param userId      the authenticated user ID
      * @param onEvent     callback for each SSE event (type, content)
      */
-    public void processMessage(String userMessage, Long sessionId,
+    public void processMessage(String userMessage, Long sessionId, Long userId,
                                Consumer<Map.Entry<String, String>> onEvent) {
 
-        // Step 1: THINKING — agent analyzes the question
-        sendEvent(onEvent, "thinking", "正在分析您的问题：" + truncate(userMessage, 50));
+        log.info("Processing message for session {} user {}: {}", sessionId, userId, truncate(userMessage, 80));
 
-        // Step 2: TOOL_CALL — agent might query database
-        sendEvent(onEvent, "tool_call", "{\"tool\":\"execute_sql\",\"status\":\"running\"}");
+        // Step 1: THINKING — let frontend know we're working
+        sendEvent(onEvent, "thinking", "正在分析您的问题…");
 
-        // Step 3: SQL — agent generates SQL (placeholder)
-        String sql = generateMockSql(userMessage);
-        sendEvent(onEvent, "sql", sql);
+        // Step 2: Look up user email — Python /chat expects email as user_id
+        String userEmail = lookupEmail(userId);
 
-        // Step 4: TOOL_RESULT — query result
-        sendEvent(onEvent, "tool_result", "{\"tool\":\"execute_sql\",\"status\":\"success\",\"row_count\":3}");
+        // Step 3: Delegate to Python Agent for real AI processing.
+        agentClient.chatStream(userMessage, userEmail, onEvent);
+    }
 
-        // Step 5: TEXT — natural language answer
-        sendEvent(onEvent, "text", generateMockAnswer(userMessage));
-
-        // Step 6: CHART — optional chart config
-        if (userMessage.contains("图表") || userMessage.contains("chart") || userMessage.contains("柱状图")) {
-            sendEvent(onEvent, "chart", generateMockChart());
+    private String lookupEmail(Long userId) {
+        try {
+            UserInfo user = userInfoMapper.findById(userId);
+            if (user != null && user.getEmail() != null) {
+                return user.getEmail();
+            }
+        } catch (Exception e) {
+            log.warn("Failed to lookup email for userId={}, falling back to id string", userId, e);
         }
-
-        // Step 7: DONE
-        sendEvent(onEvent, "done", "");
+        return String.valueOf(userId);
     }
 
     private void sendEvent(Consumer<Map.Entry<String, String>> onEvent, String type, String content) {
         onEvent.accept(Map.entry(type, content));
-        try {
-            Thread.sleep(400); // simulate processing delay
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    private String generateMockSql(String question) {
-        return "SELECT category, SUM(amount) AS total\n" +
-               "FROM sales\n" +
-               "WHERE sale_date >= '2026-05-01'\n" +
-               "GROUP BY category\n" +
-               "ORDER BY total DESC\n" +
-               "LIMIT 5";
-    }
-
-    private String generateMockAnswer(String question) {
-        return "根据查询结果，以下是您的数据分析：\n\n" +
-               "1. **电子产品** — ¥158,000\n" +
-               "2. **家居用品** — ¥124,500\n" +
-               "3. **服装鞋帽** — ¥98,200\n" +
-               "4. **食品饮料** — ¥76,800\n" +
-               "5. **运动户外** — ¥52,300\n\n" +
-               "> 注意：当前为模拟数据。接入 LangChain4j + 外部数据库后将返回真实查询结果。";
-    }
-
-    private String generateMockChart() {
-        return "{\"chartType\":\"bar\",\"option\":{" +
-               "\"title\":{\"text\":\"各品类销售额\"}," +
-               "\"xAxis\":{\"type\":\"category\",\"data\":[\"电子\",\"家居\",\"服装\",\"食品\",\"运动\"]}," +
-               "\"yAxis\":{\"type\":\"value\",\"name\":\"销售额 (¥)\"}," +
-               "\"series\":[{\"type\":\"bar\",\"data\":[158000,124500,98200,76800,52300]}]}}";
     }
 
     private String truncate(String s, int maxLen) {
-        return s.length() <= maxLen ? s : s.substring(0, maxLen) + "...";
+        return s != null && s.length() > maxLen ? s.substring(0, maxLen) + "..." : s;
     }
 }

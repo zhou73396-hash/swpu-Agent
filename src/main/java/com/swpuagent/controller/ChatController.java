@@ -76,24 +76,33 @@ public class ChatController {
 
                 // Agent pipeline: each event → SSE to frontend
                 StringBuilder fullAnswer = new StringBuilder();
-                String sql = null;
-                String chart = null;
+                String[] chart = {null};
 
-                agentService.processMessage(request.getMessage(), request.getSessionId(), event -> {
+                agentService.processMessage(request.getMessage(), request.getSessionId(), userId, event -> {
                     try {
-                        sendSse(emitter, event.getKey(), event.getValue());
+                        String eventType = event.getKey();
+                        String eventData = event.getValue();
+
+                        sendSse(emitter, eventType, eventData);
+
+                        // Collect text content for DB persistence
+                        if ("text".equals(eventType)) {
+                            fullAnswer.append(eventData);
+                        }
+                        // Capture chart if present
+                        if ("chart".equals(eventType)) {
+                            chart[0] = eventData;
+                        }
                     } catch (IOException e) {
                         log.error("SSE send failed", e);
                     }
                 });
 
-                // Collect response content for DB save
-                // (simplified — in production the Agent would return structured result)
-                fullAnswer.append("Agent response for: ").append(request.getMessage());
-
-                // Save assistant message
+                // Save assistant message with real AI response
+                String messageType = (chart[0] != null) ? "CHART" : "TEXT";
+                String content = fullAnswer.length() > 0 ? fullAnswer.toString() : "(empty response)";
                 chatService.saveAssistantMessage(request.getSessionId(),
-                        fullAnswer.toString(), "TEXT", null);
+                        content, messageType, chart[0]);
 
                 emitter.complete();
             } catch (Exception e) {

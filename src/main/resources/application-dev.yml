@@ -42,6 +42,11 @@ jwt:
 server:
   port: ${SERVER_PORT:8080}
 
+# Python Agent service (LangChain real AI agents)
+agent:
+  python:
+    base-url: ${AGENT_PYTHON_URL:http://localhost:8000}
+
 logging:
   level:
     com.swpuagent: DEBUG
