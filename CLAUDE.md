@@ -1,131 +1,114 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when working in this repository.
 
 ## Build & Run
 
 ```bash
-mvn clean compile              # compile only (no DB needed)
-mvn spring-boot:run            # run on localhost:8080
+mvn clean compile                            # compile only
+mvn spring-boot:run                          # → localhost:8080
 ```
 
-Requires MySQL 8.x + Redis 6.x at runtime.
+Runtime deps: MySQL 8.x + Redis 6.x. Quick setup:
 
 ```bash
-docker-compose up -d              # one-click MySQL + Redis
-mysql -u root -proot < sql/init.sql  # init everything: agent DB + all tables + test data
+docker-compose up -d                                                    # MySQL + Redis
+mysql -u root -proot agent -e "ALTER TABLE user_info ENGINE=InnoDB"    # required for FK support
+mysql -u root -proot < sql/init.sql                                    # create Java tables
 ```
 
-Default credentials: MySQL `root/root`, Redis `localhost:6379` (no password). All secrets use `${ENV_VAR:default}` in `application-dev.yml`.
+Default credentials: MySQL `root/root`, Redis `localhost:6379` (no password). All secrets via `${ENV_VAR:default}` in `application-dev.yml`.
 
-**Python Agent** (`agent-py/`, port 8000) is required for Chat — it runs the real LangChain/LangGraph AI agents. Without it, Chat errors but Auth/Sessions/DB/Viz still work.
+**Python Agent** (`agent-py/`, port 8000, Python 3.12) is required for Chat. Without it, Chat errors but Auth/Sessions/Viz still work.
 
 ## Architecture
 
 Spring Boot 3.5.14 + Java 17 + MyBatis 3.0.5 + Redis + Maven + jjwt 0.12.6.
 
 ```
-controller → service → mapper (MyBatis annotations, no XML)
+controller → service → mapper (MyBatis annotations)
      ↓
 dto/request (Jakarta Bean Validation) + dto/response (ApiResponse<T>)
      ↓
-common/exception (AppException → 6 HTTP-mapped subclasses)
+common/exception (AppException → 6 subclasses)
      ↓
-common/GlobalExceptionHandler (@RestControllerAdvice — catches 7 exception types)
+common/GlobalExceptionHandler (@RestControllerAdvice)
 ```
 
-**Response format** (every endpoint returns this):
+Response format:
 ```json
 {"code": 200, "message": "success", "data": { ... }}
 ```
 
 ## Modules & Endpoints (19 total)
 
-### Auth — `POST /api/auth/*` (public, no JWT)
-- `send_code` / `send_register_code` — send 6-digit code to email (stored in Redis with 300s TTL)
-- `login` / `register` — verify code → returns JWT `accessToken` + opaque `refreshToken`
-- Rules: login code → email MUST exist in `user_info`; register code → email MUST NOT exist
+### Auth — `POST /api/auth/*` (public)
+- `send_code` / `send_register_code` → 6-digit code to Redis (300s TTL), pure Java, 0 LLM
+- `login` / `register` → verify code → JWT `accessToken` + opaque `refreshToken`
+- login code: email MUST exist in `user_info`; register code: email MUST NOT exist
 
-### Chat — `GET|POST|DELETE /api/chat/*` (JWT required)
-- `GET /sessions` — list user's sessions; `POST /sessions` — create session
-- `GET /sessions/{id}/messages` — message history; `DELETE /sessions/{id}` — soft-delete
-- `POST /send` — SSE streaming (`text/event-stream`), async Agent pipeline with events: `user_saved → thinking → text → (chart) → done`
+### Chat — `GET|POST|DELETE /api/chat/*` (JWT)
+- `GET /sessions` — list; `POST /sessions` — create
+- `GET /sessions/{id}/messages` — history; `DELETE /sessions/{id}` — soft-delete
+- `POST /send` — SSE stream, events: `user_saved → thinking → text → (chart) → done`
 
-### DB Connections — `/api/db/*` (JWT required)
-- Full CRUD at `/connections` + `POST /connections/{id}/test` (real JDBC ping)
-- `GET /connections/{id}/schema` — retrieves table/column metadata via JDBC metadata
-- Passwords encrypted with AES-128 (hardcoded key `swpu-agent-2026!`)
+### DB Connections — `/api/db/*` (JWT)
+- Full CRUD at `/connections` + `POST /connections/{id}/test` (JDBC ping)
+- `GET /connections/{id}/schema` — JDBC metadata
+- Passwords: AES-128 (hardcoded key)
 
-### Visualization — `POST /api/viz/generate` (JWT required)
-- Accepts `List<Map>` data + chart type → returns ECharts option JSON
-- Auto-detects chart type: bar/line/pie/scatter based on column data types
+### Visualization — `POST /api/viz/generate` (JWT)
+- `List<Map>` data + chart type → ECharts option JSON
 
-### User — `GET|PUT /api/user/profile` (JWT required)
-- Read/update current user's profile fields (age, country, salary, email)
+### User — `GET|PUT /api/user/profile` (JWT)
+- Read/update: id, userName, email, role
 
 ### Health — `GET /api/health` (public)
-- Returns `{"status":"UP","timestamp":"...","version":"1.0.0"}`
 
 ## JWT & Security
 
-- Algorithm: HS256, secret from `jwt.secret-key` config (default 32-char string)
-- Access token: 30min expiry, contains `sub` (userId) + `role` claim
-- Refresh token: 7-day expiry, 128-char random hex (not JWT)
-- `JwtAuthFilter` (servlet filter, not Spring Security) intercepts `/api/chat/*`, `/api/db/*`, `/api/viz/*`, `/api/user/*`
-- Token passed as `Authorization: Bearer <token>`; valid token sets `request.userId` + `request.role` attributes
-- Controllers extract userId via `(Long) request.getAttribute("userId")`
-
-## Exception Handling
-
-`GlobalExceptionHandler` maps these to proper HTTP status + `ApiResponse`:
-
-| Exception | HTTP | Example message |
-|-----------|------|-----------------|
-| `AppException` subclasses | per subclass | "邮箱未注册", "会话不存在" |
-| `MethodArgumentNotValidException` | 400 | field-level detail |
-| `HttpMessageNotReadableException` | 400 | "Invalid request body" |
-| `HttpRequestMethodNotSupportedException` | 405 | "Method not allowed" |
-| `NoHandlerFoundException` | 404 | "Resource not found" |
-| `Exception` (catch-all) | 500 | "Internal server error" |
-
-Exception messages are Chinese (user-facing).
+- HS256, secret from `jwt.secret-key` config
+- Access token: 30min, contains `sub` (userId) + `role`
+- Refresh token: 7-day, 128-char hex (not JWT)
+- `JwtAuthFilter` intercepts `/api/chat/*`, `/api/db/*`, `/api/viz/*`, `/api/user/*`
+- `Authorization: Bearer <token>` → sets `request.userId` + `request.role`
 
 ## Database
 
-Java and Python share the `agent` database. Run `sql/init.sql` once to create everything.
+Java and Python share `agent` database.
 
-| Table | Purpose |
-|-------|---------|
-| `user_info` | User info + role permissions (Python Agent depends on this) |
-| `users` | JWT login accounts |
-| `chat_sessions` | Chat sessions |
-| `chat_messages` | Chat messages |
-| `db_connections` | External DB connections |
-| `tool_invocations` | Agent tool audit log |
-| `customer`, `products`, `orders`, `customer_behavior`, `sales` | Business data (Python SQL Agent queries these) |
+| Table | Owner | Notes |
+|-------|-------|-------|
+| `user_info` | Python | Java adapts to actual schema: id, user_name, email, role, password |
+| `users` | Java | JWT accounts |
+| `chat_sessions` | Java | FK → user_info(id) |
+| `chat_messages` | Java | FK → chat_sessions(id) |
+| `db_connections` | Java | FK → user_info(id) |
+| `tool_invocations` | Java | FK → chat_messages(id) |
 
-Full DDL + test data in `sql/init.sql`.
+**Critical**: `user_info` must be InnoDB (originally MyISAM → no FK support). Run `ALTER TABLE user_info ENGINE=InnoDB` before creating Java tables.
 
-## Conventions
-
-- MyBatis uses annotations (`@Select`, `@Insert`), not XML mappers
-- Lombok `@Data` on all entities/DTOs, `@RequiredArgsConstructor` on services
-- All API responses wrap in `ApiResponse<T>` — never return raw entities
-- Configuration in `application.yaml` activates `dev` profile by default
-- Verification codes stored in Redis: `login_code:{email}` / `register_code:{email}`, TTL=300s
+Java DDL in `sql/init.sql` — creates 5 Java-owned tables only, does NOT touch `user_info`.
 
 ## Python Agent Integration
 
-Agent calls are delegated to the Python FastAPI service (`agent-py/`) via `AgentClient`:
-- `AgentClient.chatStream()` calls `GET /chat?question=...&user_id=...` on the Python service
-- The Python service runs real LangChain/LangGraph agents (qwen3-max via DashScope)
-- Java relays the SSE stream directly to the frontend — `user_saved → thinking → text → done`
-- Python expects `user_id` to be the user's **email** (its permission middleware queries `SELECT role FROM user_info WHERE email = ?`)
-- Java's `AgentService.lookupEmail()` resolves `userId → email` before calling Python
-- Auth (send_code / send_register_code) is pure Java with Redis — 0 LLM cost
+- `AgentClient.chatStream(question, userId, onEvent)` → `GET /chat?question=...&user_id=...`
+- Python `/chat` dispatches to LangChain agent by keyword: 图表 → echarts, 数据分析 → analyze, 热点/新闻 → news, default → sql
+- Python SSE format: `data:{"content":{"text":"...","done":false},"done":false}` → Java relays as `text` / `chart` / `done` events
+- Python permission middleware: `SELECT role FROM user_info WHERE email = ?` → expects `email` as user_id
+- Java's `AgentService.lookupEmail()` resolves `userId → email` via `UserInfoMapper.findById()`
+- Auth is pure Java + Redis, never calls Python → 0 LLM cost for login/register
+
+## Conventions
+
+- MyBatis annotations (`@Select`, `@Insert`), not XML
+- Lombok `@Data` entities/DTOs, `@RequiredArgsConstructor` services
+- All responses → `ApiResponse<T>`
+- `application.yaml` activates `dev` profile
+- Redis keys: `login_code:{email}` / `register_code:{email}`, TTL=300s
 
 ## What's Not Yet Built
 
-- Real SMTP email delivery (SendEmailTool only logs to console)
-- Tests beyond the default context-load test
-- Refresh token endpoint (`POST /api/auth/refresh`)
+- Real SMTP email delivery (logs to console only)
+- Integration tests beyond context-load
+- Refresh token endpoint
