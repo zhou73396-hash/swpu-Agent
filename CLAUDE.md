@@ -98,6 +98,9 @@ Java DDL in `sql/init.sql` — creates 5 Java-owned tables only, does NOT touch 
 - Python permission middleware: `SELECT role FROM user_info WHERE email = ?` → expects `email` as user_id
 - Java's `AgentService.lookupEmail()` resolves `userId → email` via `UserInfoMapper.findById()`
 - Auth is pure Java + Redis, never calls Python → 0 LLM cost for login/register
+- Auth flow: generates code → saves to Redis → queues email via MessageQueueService → QueueConsumer polls → EmailMessageHandler sends via JavaMailSender
+- Queue supports retry (exponential backoff, max 3), dead letter queue, DB tracking (queue_messages table)
+- Admin API at `/api/admin/queues/*` for dead letter management + queue stats (ADMIN role required)
 
 ## Conventions
 

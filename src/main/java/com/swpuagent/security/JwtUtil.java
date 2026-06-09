@@ -3,96 +3,79 @@ package com.swpuagent.security;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
-import jakarta.annotation.PostConstruct;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
-import java.util.Map;
 
-@Slf4j
 @Component
 public class JwtUtil {
 
-    private final SecretKey key;
-    private final long accessTokenExpireMs;
-    private final long refreshTokenExpireMs;
-    private final String secret;
+    @Value("${jwt.secret-key}")
+    private String secretKey;
 
-    public JwtUtil(
-            @Value("${jwt.secret-key}") String secret,
-            @Value("${jwt.access-token-expire-minutes}") long accessMinutes,
-            @Value("${jwt.refresh-token-expire-days}") long refreshDays) {
-        this.secret = secret;
-        this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
-        this.accessTokenExpireMs = accessMinutes * 60 * 1000;
-        this.refreshTokenExpireMs = refreshDays * 24 * 60 * 60 * 1000;
+    @Value("${jwt.access-token-expiration:1800000}")
+    private long accessTokenExpiration;
+
+    @Value("${jwt.refresh-token-expiration:604800000}")
+    private long refreshTokenExpiration;
+
+    private SecretKey getSigningKey() {
+        return Keys.hmacShaKeyFor(secretKey.getBytes(StandardCharsets.UTF_8));
     }
 
-    @PostConstruct
-    void validate() {
-        if (secret.length() < 32) {
-            log.warn("⚠ JWT_SECRET_KEY is weak ({} chars). Set a strong key (≥32) via environment variable for production.", secret.length());
-        } else {
-            log.info("JWT secret key validated ({} chars)", secret.length());
-        }
-    }
-
-    /** Generate JWT access token */
-    public String generateAccessToken(Long userId, String role) {
-        Date now = new Date();
+    public String generateAccessToken(String userId, String role) {
         return Jwts.builder()
-                .claims(Map.of("role", role))
-                .subject(String.valueOf(userId))
-                .issuedAt(now)
-                .expiration(new Date(now.getTime() + accessTokenExpireMs))
-                .signWith(key)
+                .subject(userId)
+                .claim("role", role)
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + accessTokenExpiration))
+                .signWith(getSigningKey())
                 .compact();
     }
 
-    /** Generate opaque refresh token (random hex, not JWT) */
     public String generateRefreshToken() {
-        byte[] bytes = new byte[64];
-        new java.security.SecureRandom().nextBytes(bytes);
-        StringBuilder sb = new StringBuilder(128);
-        for (byte b : bytes) {
-            sb.append(String.format("%02x", b));
+        StringBuilder sb = new StringBuilder();
+        java.security.SecureRandom random = new java.security.SecureRandom();
+        for (int i = 0; i < 128; i++) {
+            sb.append(Integer.toHexString(random.nextInt(16)));
         }
         return sb.toString();
     }
 
-    /** Parse and validate JWT access token, return claims or null if invalid */
     public Claims parseToken(String token) {
+        return Jwts.parser()
+                .verifyWith(getSigningKey())
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
+    }
+
+    public boolean isTokenExpired(String token) {
         try {
-            return Jwts.parser()
-                    .verifyWith(key)
-                    .build()
-                    .parseSignedClaims(token)
-                    .getPayload();
+            Claims claims = parseToken(token);
+            return claims.getExpiration().before(new Date());
         } catch (Exception e) {
-            return null;
+            return true;
         }
     }
 
-    /** Extract user ID from valid token */
-    public Long getUserId(String token) {
-        Claims claims = parseToken(token);
-        if (claims == null) return null;
-        return Long.parseLong(claims.getSubject());
+    public boolean validateToken(String token) {
+        try {
+            parseToken(token);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
-    /** Extract role from valid token */
-    public String getRole(String token) {
-        Claims claims = parseToken(token);
-        if (claims == null) return null;
-        return claims.get("role", String.class);
+    public String getUserIdFromToken(String token) {
+        return parseToken(token).getSubject();
     }
 
-    /** Check if token is valid (not expired, correctly signed) */
-    public boolean isValid(String token) {
-        return parseToken(token) != null;
+    public String getRoleFromToken(String token) {
+        return parseToken(token).get("role", String.class);
     }
 }

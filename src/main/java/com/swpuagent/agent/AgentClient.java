@@ -1,248 +1,219 @@
 package com.swpuagent.agent;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import cn.hutool.core.util.StrUtil;
+import cn.hutool.http.HttpRequest;
+import cn.hutool.http.HttpResponse;
+import cn.hutool.json.JSONObject;
+import cn.hutool.json.JSONUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestClient;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.springframework.util.StringUtils;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.Map;
+import java.util.Objects;
 import java.util.function.Consumer;
 
-/**
- * HTTP client for the Python Agent service (FastAPI on port 8000).
- * <p>
- * The Python service hosts real LangChain agents:
- * <ul>
- *   <li>SqlQuestionAgent — SQL query answering (SSE streaming)</li>
- *   <li>EchartsAgent — chart generation</li>
- *   <li>AnalyzeAgent — data analysis</li>
- *   <li>FileAnalyzeAgent — file analysis (SSE streaming)</li>
- *   <li>NewsAgent — news retrieval (SSE streaming)</li>
- * </ul>
- * Note: Auth (send_code / send_register_code) is handled by Java directly,
- * no LLM cost. Only /chat goes to Python.
- */
 @Slf4j
 @Component
 public class AgentClient {
 
-    private final RestClient restClient;
-    private final ObjectMapper objectMapper;
+    @Value("${agent.base-url:http://192.168.158.56:8000}")
+    private String baseUrl;
 
-    public AgentClient(@Value("${agent.python.base-url:http://localhost:8000}") String baseUrl,
-                       ObjectMapper objectMapper) {
-        this.restClient = RestClient.builder()
-                .baseUrl(baseUrl)
-                .build();
-        this.objectMapper = objectMapper;
-        log.info("AgentClient initialized with base URL: {}", baseUrl);
+    public JSONObject systemChat(String message,String email) {
+        String url = baseUrl + "/agent/system/chat";
+        JSONObject body = new JSONObject();
+        body.set("message", message);
+        body.set("user_id",email);
+        try (HttpResponse response = HttpRequest.post(url)
+                .header("Content-Type", "application/json")
+                .body(body.toString())
+                .timeout(30000)
+                .execute()) {
+            String resultBody = response.body();
+            log.info("SystemAgent response: {}", resultBody);
+            return JSONUtil.parseObj(resultBody);
+        } catch (Exception e) {
+            log.error("SystemAgent call failed: {}", e.getMessage());
+            JSONObject error = new JSONObject();
+            error.set("code", "500");
+            error.set("msg", "System agent unavailable: " + e.getMessage());
+            return error;
+        }
     }
 
-    // ==================== Chat (SSE relay) ====================
+    public void sqlChat(String question, String userId, Consumer<String> onEvent) {
+        streamChat("/agent/sql/chat", question, userId, onEvent);
+    }
 
-    /**
-     * Call the Python /chat endpoint and relay the response through a callback.
-     * <p>
-     * Python returns one of:
-     * <ul>
-     *   <li>SSE stream (text/event-stream) for SqlQuestionAgent / FileAnalyzeAgent / NewsAgent.
-     *       Each line: {@code data:{"content":{...},"done":false}}</li>
-     *   <li>JSON (application/json) for EchartsAgent / AnalyzeAgent.
-     *       Body: {@code {"code":200,"data":{...}}}</li>
-     * </ul>
-     *
-     * @param question user's natural language question
-     * @param userId   user ID (passed as query param to Python)
-     * @param onEvent  callback for each SSE event (eventType, data)
-     */
-    public void chatStream(String question, String userId,
-                           Consumer<Map.Entry<String, String>> onEvent) {
-        log.info("Calling Python /chat?question={}&user_id={}", truncate(question, 80), userId);
+    public JSONObject echartsGenerate(String question, String userId) {
+        String url = baseUrl + "/agent/echarts/generate";
+        JSONObject body = new JSONObject();
+        body.set("question", question);
+        body.set("user_id", userId);
+
+        try (HttpResponse response = HttpRequest.post(url)
+                .header("Content-Type", "application/json")
+                .body(body.toString())
+                .timeout(60000)
+                .execute()) {
+            String resultBody = response.body();
+            log.info("EchartsAgent response: {}", resultBody);
+            return JSONUtil.parseObj(resultBody);
+        } catch (Exception e) {
+            log.error("EchartsAgent call failed: {}", e.getMessage());
+            JSONObject error = new JSONObject();
+            error.set("code", 500);
+            error.set("msg", "ECharts agent unavailable: " + e.getMessage());
+            return error;
+        }
+    }
+
+    public JSONObject analyze(String question, String userId) {
+        String url = baseUrl + "/agent/analyze";
+        JSONObject body = new JSONObject();
+        body.set("question", question);
+        body.set("user_id", userId);
+
+        try (HttpResponse response = HttpRequest.post(url)
+                .header("Content-Type", "application/json")
+                .body(body.toString())
+                .timeout(60000)
+                .execute()) {
+            String resultBody = response.body();
+            log.info("AnalyzeAgent response: {}", resultBody);
+            return JSONUtil.parseObj(resultBody);
+        } catch (Exception e) {
+            log.error("AnalyzeAgent call failed: {}", e.getMessage());
+            JSONObject error = new JSONObject();
+            error.set("code", 500);
+            error.set("msg", "Analyze agent unavailable: " + e.getMessage());
+            return error;
+        }
+    }
+
+    public JSONObject uploadFile(MultipartFile file) {
+        String url = baseUrl + "/upload";
+        String filename = sanitizeFilename(file.getOriginalFilename());
+
         try {
-            restClient.get()
-                    .uri(uriBuilder -> uriBuilder
-                            .path("/chat")
-                            .queryParam("question", question)
-                            .queryParam("user_id", userId)
-                            .build())
-                    .exchange((request, response) -> {
-                        MediaType contentType = response.getHeaders().getContentType();
-                        log.debug("Python /chat response content-type: {}", contentType);
+            ByteArrayResource resource = new ByteArrayResource(file.getBytes()) {
+                @Override
+                public String getFilename() {
+                    return filename;
+                }
+            };
 
-                        if (contentType != null && contentType.includes(MediaType.TEXT_EVENT_STREAM)) {
-                            handleSseStream(response.getBody(), onEvent);
-                        } else {
-                            handleJsonResponse(response.getBody(), onEvent);
+            MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+            body.add("file", resource);
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+            RestTemplate restTemplate = new RestTemplate(createRequestFactory());
+            String responseBody = restTemplate.postForObject(url, new HttpEntity<>(body, headers), String.class);
+            log.info("File upload response: {}", responseBody);
+            return JSONUtil.parseObj(responseBody);
+        } catch (HttpStatusCodeException e) {
+            String responseBody = e.getResponseBodyAsString();
+            log.error("File upload failed with status {}: {}", e.getStatusCode(), responseBody);
+            return parseUploadError(responseBody, e.getMessage());
+        } catch (Exception e) {
+            log.error("File upload failed: {}", e.getMessage());
+            JSONObject error = new JSONObject();
+            error.set("code", 500);
+            error.set("msg", "File upload unavailable: " + e.getMessage());
+            return error;
+        }
+    }
+
+    public void fileChat(String question, String userId, Consumer<String> onEvent) {
+        streamChat("/agent/file/chat", question, userId, onEvent);
+    }
+
+    public void newsChat(String question, String userId, Consumer<String> onEvent) {
+        streamChat("/agent/news/chat", question, userId, onEvent);
+    }
+
+    public void trainChat(String question, String userId, Consumer<String> onEvent) {
+        streamChat("/agent/train/chat", question, userId, onEvent);
+    }
+
+    private void streamChat(String path, String question, String userId, Consumer<String> onEvent) {
+        String url = baseUrl + path;
+        JSONObject body = new JSONObject();
+        body.set("question", question);
+        body.set("user_id", userId);
+
+        try {
+            HttpURLConnection conn = (HttpURLConnection) new URI(url).toURL().openConnection();
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
+            conn.setRequestProperty("Accept", "text/event-stream");
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(120000);
+
+            byte[] input = body.toString().getBytes(StandardCharsets.UTF_8);
+            conn.getOutputStream().write(input);
+
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (line.startsWith("data:")) {
+                        String data = line.substring(5).trim();
+                        if (StrUtil.isNotBlank(data)) {
+                            onEvent.accept(data);
                         }
-                        return null;
-                    });
-        } catch (Exception e) {
-            log.error("Failed to call Python /chat", e);
-            onEvent.accept(Map.entry("error", "Agent service unavailable: " + e.getMessage()));
-            onEvent.accept(Map.entry("done", ""));
-        }
-    }
-
-    /**
-     * Handle SSE (text/event-stream) response from Python agent.
-     * Reads lines, parses "data:..." lines, and relays content to onEvent.
-     */
-    private void handleSseStream(java.io.InputStream body,
-                                 Consumer<Map.Entry<String, String>> onEvent) {
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(body, StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (!line.startsWith("data:")) {
-                    continue;
-                }
-                String json = line.substring(5).trim();
-                if (json.isEmpty() || "[DONE]".equals(json)) {
-                    continue;
-                }
-                try {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> sseData = objectMapper.readValue(json, Map.class);
-                    relaySseData(sseData, onEvent);
-                } catch (JsonProcessingException e) {
-                    log.debug("Non-JSON SSE data: {}", json);
-                    onEvent.accept(Map.entry("text", json));
-                }
-            }
-        } catch (Exception e) {
-            log.error("Error reading SSE stream from Python agent", e);
-            onEvent.accept(Map.entry("error", "Stream read error: " + e.getMessage()));
-            onEvent.accept(Map.entry("done", ""));
-        }
-    }
-
-    /**
-     * Handle plain JSON response from Python agent (EchartsAgent, AnalyzeAgent).
-     */
-    @SuppressWarnings("unchecked")
-    private void handleJsonResponse(java.io.InputStream body,
-                                    Consumer<Map.Entry<String, String>> onEvent) {
-        try {
-            byte[] bytes = body.readAllBytes();
-            String json = new String(bytes, StandardCharsets.UTF_8);
-            log.debug("Python /chat JSON response: {}", truncate(json, 200));
-            try {
-                Map<String, Object> response = objectMapper.readValue(json, Map.class);
-                Object code = response.get("code");
-                Object data = response.get("data");
-
-                if (data instanceof Map) {
-                    Map<String, Object> dataMap = (Map<String, Object>) data;
-                    // Check if it's an ECharts response
-                    if (dataMap.containsKey("option") || dataMap.containsKey("chart_type")) {
-                        onEvent.accept(Map.entry("chart", objectMapper.writeValueAsString(dataMap)));
-                    } else {
-                        onEvent.accept(Map.entry("text", objectMapper.writeValueAsString(dataMap)));
                     }
-                } else if (data instanceof String) {
-                    onEvent.accept(Map.entry("text", (String) data));
-                } else {
-                    onEvent.accept(Map.entry("text", json));
                 }
-                onEvent.accept(Map.entry("done", ""));
-            } catch (Exception e) {
-                // If not JSON, pass as raw text
-                onEvent.accept(Map.entry("text", json));
-                onEvent.accept(Map.entry("done", ""));
             }
+            conn.disconnect();
         } catch (Exception e) {
-            log.error("Error reading JSON response from Python agent", e);
-            onEvent.accept(Map.entry("error", "Read error: " + e.getMessage()));
-            onEvent.accept(Map.entry("done", ""));
+            log.error("SSE stream {} failed: {}", path, e.getMessage());
+            onEvent.accept("{\"content\":{\"text\":\"Agent service error: " +
+                    e.getMessage() + "\",\"done\":false},\"done\":false}");
+            onEvent.accept("{\"content\":\"\",\"done\":true}");
         }
     }
 
-    /**
-     * Relay a single SSE data object from Python to Java event format.
-     * <p>
-     * Python format: {"content": {"text": "...", "done": false}, "done": false}
-     * The inner "content" object may contain {"text": "...", "done": false} or {"done": true}.
-     */
-    @SuppressWarnings("unchecked")
-    private void relaySseData(Map<String, Object> sseData,
-                              Consumer<Map.Entry<String, String>> onEvent) {
-        Object contentObj = sseData.get("content");
-        boolean outerDone = Boolean.TRUE.equals(sseData.get("done"));
-
-        if (contentObj instanceof Map) {
-            Map<String, Object> content = (Map<String, Object>) contentObj;
-            boolean innerDone = Boolean.TRUE.equals(content.get("done"));
-            Object text = content.get("text");
-
-            if (text instanceof String && !((String) text).isEmpty()) {
-                onEvent.accept(Map.entry("text", (String) text));
-            }
-
-            if (innerDone || outerDone) {
-                onEvent.accept(Map.entry("done", ""));
-            }
-        } else if (contentObj instanceof String && !((String) contentObj).isEmpty()) {
-            onEvent.accept(Map.entry("text", (String) contentObj));
-        }
-
-        if (outerDone && !(contentObj instanceof Map)) {
-            onEvent.accept(Map.entry("done", ""));
-        }
+    private SimpleClientHttpRequestFactory createRequestFactory() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(10000);
+        factory.setReadTimeout(60000);
+        return factory;
     }
 
-    // ==================== File Upload ====================
-
-    /**
-     * Upload a file to the Python agent for analysis.
-     *
-     * @param fileBytes file content
-     * @param filename  original filename
-     * @return {"code": 200, "file_name": "...", "msg": "上传成功"}
-     */
-    @SuppressWarnings("unchecked")
-    public Map<String, Object> uploadFile(byte[] fileBytes, String filename) {
-        log.info("Uploading file to Python /upload: {}", filename);
-        try {
-            // Python /upload expects multipart/form-data
-            String body = restClient.post()
-                    .uri("/upload")
-                    .contentType(MediaType.MULTIPART_FORM_DATA)
-                    .body(createMultipartBody(fileBytes, filename))
-                    .retrieve()
-                    .body(String.class);
-            return objectMapper.readValue(body, Map.class);
-        } catch (Exception e) {
-            log.error("Failed to upload file to Python", e);
-            return Map.of("code", 500, "msg", "文件上传失败: " + e.getMessage());
+    private JSONObject parseUploadError(String responseBody, String fallbackMessage) {
+        if (StringUtils.hasText(responseBody) && JSONUtil.isTypeJSON(responseBody)) {
+            return JSONUtil.parseObj(responseBody);
         }
+        JSONObject error = new JSONObject();
+        error.set("code", 500);
+        error.set("msg", Objects.requireNonNullElse(fallbackMessage, "File upload failed"));
+        return error;
     }
 
-    /**
-     * Build a simple multipart form-data body.
-     * Uses org.springframework.util.LinkedMultiValueMap for RestClient compatibility.
-     */
-    private org.springframework.util.MultiValueMap<String, Object> createMultipartBody(
-            byte[] fileBytes, String filename) {
-        org.springframework.util.LinkedMultiValueMap<String, Object> parts =
-                new org.springframework.util.LinkedMultiValueMap<>();
-        org.springframework.core.io.ByteArrayResource resource =
-                new org.springframework.core.io.ByteArrayResource(fileBytes) {
-                    @Override
-                    public String getFilename() {
-                        return filename;
-                    }
-                };
-        parts.add("file", resource);
-        return parts;
-    }
-
-    private String truncate(String s, int maxLen) {
-        return s != null && s.length() > maxLen ? s.substring(0, maxLen) + "..." : s;
+    private String sanitizeFilename(String originalFilename) {
+        String filename = StringUtils.hasText(originalFilename) ? originalFilename : "upload.docx";
+        filename = filename.replace('\\', '/');
+        filename = filename.substring(filename.lastIndexOf('/') + 1);
+        return StringUtils.cleanPath(filename);
     }
 }

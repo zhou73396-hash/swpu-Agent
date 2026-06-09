@@ -3,12 +3,15 @@ package com.swpuagent.controller;
 import com.swpuagent.dto.request.LoginRequest;
 import com.swpuagent.dto.request.RegisterRequest;
 import com.swpuagent.dto.request.SendCodeRequest;
-import com.swpuagent.dto.response.ApiResponse;
 import com.swpuagent.dto.response.LoginResponse;
 import com.swpuagent.service.AuthService;
+import com.swpuagent.utils.Result;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -19,42 +22,37 @@ public class AuthController {
 
     /**
      * Send login verification code.
-     * POST /api/auth/send_code
+     * Public endpoint — no JWT required.
      */
     @PostMapping("/send_code")
-    public ApiResponse<Void> sendLoginCode(@Valid @RequestBody SendCodeRequest request) {
-        authService.sendLoginCode(request.getEmail());
-        return ApiResponse.success("发送成功", null);
+    public Result<Void> sendLoginCode(@Valid @RequestBody SendCodeRequest request) {
+        return authService.sendLoginCode(request.getEmail());
     }
 
     /**
      * Send registration verification code.
-     * POST /api/auth/send_register_code
+     * Public endpoint — no JWT required.
      */
     @PostMapping("/send_register_code")
-    public ApiResponse<Void> sendRegisterCode(@Valid @RequestBody SendCodeRequest request) {
-        authService.sendRegisterCode(request.getEmail());
-        return ApiResponse.success("发送成功", null);
+    public Result<Void> sendRegisterCode(@Valid @RequestBody SendCodeRequest request) {
+        return authService.sendRegisterCode(request.getEmail());
     }
 
     /**
      * Login with email + verification code.
-     * POST /api/auth/login
+     * Public endpoint — returns JWT tokens.
      */
     @PostMapping("/login")
-    public ApiResponse<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
-        LoginResponse resp = authService.loginWithCode(request.getEmail(), request.getCode());
-        return ApiResponse.success("登陆成功", resp);
+    public Result<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
+        return authService.login(request.getEmail(), request.getCode());
     }
 
     /**
      * Register new user.
-     * POST /api/auth/register
+     * Public endpoint — no JWT required.
      */
     @PostMapping("/register")
-    public ApiResponse<LoginResponse> register(@Valid @RequestBody RegisterRequest request) {
-        LoginResponse resp = authService.register(
-                request.getEmail(), request.getCode(), request.getUserName());
-        return ApiResponse.success("注册成功", resp);
+    public Result<Void> register(@Valid @RequestBody RegisterRequest request) {
+        return authService.register(request.getEmail(), request.getCode(), request.getUserName());
     }
 }

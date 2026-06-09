@@ -1,134 +1,64 @@
 package com.swpuagent.controller;
 
+import cn.hutool.json.JSONObject;
+import com.swpuagent.agent.AgentClient;
 import com.swpuagent.dto.request.ChatSendRequest;
-import com.swpuagent.dto.request.CreateSessionRequest;
-import com.swpuagent.dto.response.ApiResponse;
-import com.swpuagent.entity.ChatMessage;
-import com.swpuagent.entity.ChatSession;
-import com.swpuagent.service.AgentService;
 import com.swpuagent.service.ChatService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
-import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Qualifier;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.springframework.web.multipart.MultipartFile;
 
-import java.io.IOException;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
+import java.util.Locale;
 
-@Slf4j
 @RestController
 @RequestMapping("/api/chat")
+@RequiredArgsConstructor
 public class ChatController {
 
     private final ChatService chatService;
-    private final AgentService agentService;
-    private final Executor sseExecutor;
-
-    public ChatController(ChatService chatService,
-                          AgentService agentService,
-                          @Qualifier("sseExecutor") Executor sseExecutor) {
-        this.chatService = chatService;
-        this.agentService = agentService;
-        this.sseExecutor = sseExecutor;
-    }
-
-    /** List sessions — GET /api/chat/sessions */
-    @GetMapping("/sessions")
-    public ApiResponse<List<ChatSession>> listSessions(HttpServletRequest request) {
-        Long userId = (Long) request.getAttribute("userId");
-        return ApiResponse.success(chatService.listSessions(userId));
-    }
-
-    /** Create session — POST /api/chat/sessions */
-    @PostMapping("/sessions")
-    public ApiResponse<ChatSession> createSession(@RequestBody CreateSessionRequest req,
-                                                   HttpServletRequest request) {
-        Long userId = (Long) request.getAttribute("userId");
-        ChatSession session = chatService.createSession(userId, req.getDbConnectionId(), req.getTitle());
-        return ApiResponse.success(session);
-    }
-
-    /** Get messages — GET /api/chat/sessions/{id}/messages */
-    @GetMapping("/sessions/{id}/messages")
-    public ApiResponse<List<ChatMessage>> getMessages(@PathVariable("id") Long sessionId) {
-        return ApiResponse.success(chatService.getMessages(sessionId));
-    }
-
-    /** Delete session — DELETE /api/chat/sessions/{id} */
-    @DeleteMapping("/sessions/{id}")
-    public ApiResponse<Void> deleteSession(@PathVariable("id") Long sessionId) {
-        chatService.deleteSession(sessionId);
-        return ApiResponse.success("会话已删除", null);
-    }
+    private final AgentClient agentClient;
 
     /**
-     * Send message to Agent — POST /api/chat/send
-     * Returns SSE (Server-Sent Events) stream.
+     * Send message to agent and receive SSE streaming response.
+     * JWT protected — userId extracted from token by JwtAuthFilter.
      */
-    @PostMapping(value = "/send", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter sendMessage(@Valid @RequestBody ChatSendRequest request,
-                                   HttpServletRequest httpRequest) {
-        Long userId = (Long) httpRequest.getAttribute("userId");
-        SseEmitter emitter = new SseEmitter(120_000L); // 2 min timeout
-
-        CompletableFuture.runAsync(() -> {
-            try {
-                // Save user message
-                ChatMessage userMsg = chatService.saveUserMessage(request.getSessionId(), request.getMessage());
-                sendSse(emitter, "user_saved", "{\"message_id\":" + userMsg.getId() + "}");
-
-                // Agent pipeline: each event → SSE to frontend
-                StringBuilder fullAnswer = new StringBuilder();
-                String[] chart = {null};
-
-                agentService.processMessage(request.getMessage(), request.getSessionId(), userId, event -> {
-                    try {
-                        String eventType = event.getKey();
-                        String eventData = event.getValue();
-
-                        sendSse(emitter, eventType, eventData);
-
-                        if ("text".equals(eventType)) {
-                            fullAnswer.append(eventData);
-                        }
-                        if ("chart".equals(eventType)) {
-                            chart[0] = eventData;
-                        }
-                    } catch (IOException e) {
-                        log.error("SSE send failed", e);
-                    }
-                });
-
-                // Save assistant message
-                String messageType = (chart[0] != null) ? "CHART" : "TEXT";
-                String content = fullAnswer.length() > 0 ? fullAnswer.toString() : "(empty response)";
-                chatService.saveAssistantMessage(request.getSessionId(),
-                        content, messageType, chart[0]);
-
-                emitter.complete();
-            } catch (Exception e) {
-                log.error("Agent processing error", e);
-                try {
-                    sendSse(emitter, "error", e.getMessage());
-                    emitter.complete();
-                } catch (IOException ex) {
-                    emitter.completeWithError(ex);
-                }
-            }
-        }, sseExecutor);  // isolated SSE thread pool, not ForkJoinPool
-
-        return emitter;
+    @PostMapping("/send")
+    public SseEmitter send(@Valid @RequestBody ChatSendRequest request, HttpServletRequest httpRequest) {
+        String userId = (String) httpRequest.getAttribute("userId");
+        if (userId == null) {
+            throw new RuntimeException("User not authenticated");
+        }
+        return chatService.sendMessage(request.getQuestion(), userId);
     }
 
-    private void sendSse(SseEmitter emitter, String eventType, String data) throws IOException {
-        emitter.send(SseEmitter.event()
-                .name(eventType)
-                .data(data, MediaType.APPLICATION_JSON));
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public JSONObject upload(@RequestParam("file") MultipartFile file, HttpServletRequest httpRequest) {
+        String userId = (String) httpRequest.getAttribute("userId");
+        if (userId == null) {
+            throw new RuntimeException("User not authenticated");
+        }
+        validateUpload(file);
+        return agentClient.uploadFile(file);
+    }
+
+    private void validateUpload(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new RuntimeException("Uploaded file is empty");
+        }
+        String originalFilename = file.getOriginalFilename();
+        if (originalFilename == null || originalFilename.isBlank()) {
+            throw new RuntimeException("Uploaded filename is empty");
+        }
+        if (!originalFilename.toLowerCase(Locale.ROOT).endsWith(".docx")) {
+            throw new RuntimeException("Only .docx files are supported");
+        }
     }
 }

@@ -84,7 +84,26 @@ CREATE TABLE IF NOT EXISTS db_connections (
     CONSTRAINT fk_connections_user FOREIGN KEY (user_id) REFERENCES user_info(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 5. Agent 工具调用审计日志
+-- 5. 消息队列追踪表
+CREATE TABLE IF NOT EXISTS queue_messages (
+    id            BIGINT PRIMARY KEY AUTO_INCREMENT,
+    message_id    VARCHAR(36)  NOT NULL UNIQUE COMMENT 'UUID, 跨系统关联',
+    queue_name    VARCHAR(100) NOT NULL COMMENT '队列名称',
+    message_type  VARCHAR(50)  NOT NULL COMMENT '消息类型: EMAIL_VERIFICATION, BUSINESS_LOG',
+    payload       TEXT         NOT NULL COMMENT '原始 JSON 消息体',
+    status        ENUM('PENDING','PROCESSING','SUCCESS','FAILED','DEAD') NOT NULL DEFAULT 'PENDING',
+    retry_count   INT          NOT NULL DEFAULT 0,
+    max_retries   INT          NOT NULL DEFAULT 3,
+    next_retry_at DATETIME     DEFAULT NULL COMMENT '下次重试时间, NULL=立即',
+    error_message TEXT         DEFAULT NULL COMMENT '最近一次失败原因',
+    created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_qm_status_queue (status, queue_name),
+    INDEX idx_qm_next_retry (next_retry_at),
+    INDEX idx_qm_message_id (message_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 6. Agent 工具调用审计日志
 CREATE TABLE IF NOT EXISTS tool_invocations (
     id               BIGINT PRIMARY KEY AUTO_INCREMENT,
     message_id       BIGINT NOT NULL,

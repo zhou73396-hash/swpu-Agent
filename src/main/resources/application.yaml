@@ -1,5 +1,34 @@
+server:
+  port: 8080
+
 spring:
-  application:
-    name: swpu-agent
-  profiles:
-    active: dev
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://192.168.158.56:3306/agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    username: zl
+    password: 123456
+  data:
+    redis:
+      host: 192.168.158.56
+      port: 6379
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+
+jwt:
+  secret-key: swpu-agent-jwt-secret-key-2026-i-always-like-xyhc
+  access-token-expiration: 1800000
+  refresh-token-expiration: 604800000
+
+agent:
+  base-url: http://192.168.158.56:8000
+
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
