@@ -42,7 +42,8 @@ public class AuthServiceImpl implements AuthService {
 
         // 3. Forward to Python SystemAgent to send email
         String message = String.format("send login verification code %s to email %s", code, email);
-        log.info("AuthFlow action=SEND_LOGIN_CODE phase=system_agent_call email={}", maskEmail(email));
+        log.info("AuthFlow action=SEND_LOGIN_CODE phase=system_agent_call email={" +
+                "}", maskEmail(email));
         JSONObject agentResult = agentClient.systemChat(message,email);
         log.info("AuthFlow action=SEND_LOGIN_CODE phase=system_agent_result email={} resultCode={}",
                 maskEmail(email), agentResult.getStr("code"));

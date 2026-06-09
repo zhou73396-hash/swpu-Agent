@@ -23,6 +23,7 @@ The **swpu-agent** Java wrapper is a Spring Boot 3.5.14 application that wraps t
 │  │  ┌─────────────────┐  ┌────────────────────────┐   │  │
 │  │  │  AuthController  │  │   ChatController       │   │  │
 │  │  │  /api/auth/*     │  │   /api/chat/send       │   │  │
+│  │  │                  │  │   /api/chat/upload      │   │  │
 │  │  └────────┬─────────┘  └───────────┬────────────┘   │  │
 │  └───────────┼──────────────────────────┼──────────────┘  │
 │              │                          │                │
@@ -40,7 +41,7 @@ The **swpu-agent** Java wrapper is a Spring Boot 3.5.14 application that wraps t
 │                         │                                │
 │  ┌──────────────────────▼──────────────────────────────┐ │
 │  │              External Services                       │ │
-│  │  MySQL 8.0  │  Redis 6.0  │  Python Agent :8000     │ │
+│  │  MySQL 8.0  │  Redis 7.x  │  Python Agent :8000     │ │
 │  └─────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -49,11 +50,13 @@ The **swpu-agent** Java wrapper is a Spring Boot 3.5.14 application that wraps t
 
 | Decision | Chosen | Alternative | Rationale |
 |----------|--------|-------------|-----------|
-| Code generation | Java-side (6-digit) | Python-side | Decouples code generation from email; enables Redis TTL guarantee |
+| Code generation | Java-side 4-digit (login); Python-side (register) | Python-side only | Java generates login codes for Redis TTL control; Python handles register codes |
 | Code storage | Redis (TTL 60s) | Database | Auto-expiry, no manual cleanup |
 | Auth token | JWT HS256 | Session-based | Stateless, compatible with microservice architecture |
 | Chat relay | SSE pass-through | Full proxy | Preserves Python agent streaming behavior |
-| HTTP client | Hutool HttpUtil | Spring RestTemplate | Lightweight, already a project dependency |
+| HTTP client | Hutool HttpUtil + RestTemplate | Spring RestTemplate only | Hutool for simple JSON calls, RestTemplate for multipart upload |
+| Email delivery | Python SystemAgent | Java SMTP | Reuses Python's SMTP config; no Java-side SMTP needed |
+| User registration | Java MyBatis Plus direct insert | Python agent | Simpler; Java has full DB access |
 
 ---
 
@@ -65,10 +68,10 @@ The **swpu-agent** Java wrapper is a Spring Boot 3.5.14 application that wraps t
 | Language | Java | 17 |
 | ORM | MyBatis Plus | 3.5.15 |
 | Database | MySQL | 8.0 |
-| Cache | Redis | 6.0+ |
+| Cache | Redis | 7.x (Alpine) |
 | JWT | jjwt (io.jsonwebtoken) | 0.12.6 |
 | HTTP Client | Hutool | 5.8.38 |
-| Email | Spring Boot Mail | — |
+| Email | via Python SystemAgent | — |
 | Validation | Jakarta Bean Validation | — |
 
 ---
@@ -77,17 +80,17 @@ The **swpu-agent** Java wrapper is a Spring Boot 3.5.14 application that wraps t
 
 ```
 src/main/java/com/swpuagent/
-├── SwpuAgentApplication.java    # Entry point + @MapperScan
+├── SwpuAgentApplication.java    # Entry point + @MapperScan + @EnableScheduling
 ├── agent/
-│   └── AgentClient.java         # HTTP client to Python agent service
+│   └── AgentClient.java         # HTTP client to Python agent service (8 methods)
 ├── common/
 │   └── GlobalExceptionHandler.java  # @RestControllerAdvice
 ├── config/
 │   ├── CorsConfig.java          # CORS configuration
 │   └── RedisConfig.java         # RedisTemplate beans
 ├── controller/
-│   ├── AuthController.java      # /api/auth/* endpoints
-│   └── ChatController.java      # /api/chat/* endpoints
+│   ├── AuthController.java      # /api/auth/* (4 endpoints)
+│   └── ChatController.java      # /api/chat/* (2 endpoints)
 ├── dto/
 │   ├── request/
 │   │   ├── SendCodeRequest.java
@@ -97,13 +100,13 @@ src/main/java/com/swpuagent/
 │   └── response/
 │       └── LoginResponse.java
 ├── entity/
-│   ├── Customer.java
-│   ├── CustomerBehavior.java
-│   ├── Orders.java
-│   ├── Products.java
-│   ├── Sales.java
-│   ├── SalesOrders.java
-│   └── UserInfo.java
+│   ├── Customer.java            # → table: customer
+│   ├── CustomerBehavior.java    # → table: customer_behavior
+│   ├── Orders.java              # → table: orders
+│   ├── Products.java            # → table: products
+│   ├── Sales.java               # → table: sales
+│   ├── SalesOrders.java         # → table: sales_orders
+│   └── UserInfo.java            # → table: user_info (Python-owned)
 ├── mapper/
 │   ├── CustomerMapper.java
 │   ├── CustomerBehaviorMapper.java
@@ -144,7 +147,9 @@ src/main/java/com/swpuagent/
 │   └── ResultCode.java          # Status code enum
 └── vo/
     ├── ChatRequestVo.java
-    └── SendLoginCodeRequest.java
+    ├── SendLoginCodeRequest.java
+    ├── UserLoginDto.java
+    └── SendEmailVO.java
 ```
 
 ---
@@ -180,7 +185,7 @@ All endpoints return the unified `Result<T>` format:
 
 ---
 
-### 4.3 Auth Endpoints (Public)
+### 4.3 Auth Endpoints (Public — 4 endpoints)
 
 #### 4.3.1 Send Login Code
 
@@ -207,8 +212,8 @@ All endpoints return the unified `Result<T>` format:
 ```
 
 **Internal Flow:**
-1. Java generates 6-digit numeric code via `RandomUtil.randomNumbers(6)`
-2. Stores in Redis: key `login:code:{email}`, value `"123456"`, TTL 60s
+1. Java generates 4-digit numeric code via `RandomUtil.randomNumbers(4)`
+2. Stores in Redis: key `login:code:{email}`, TTL 60s
 3. Forwards to Python `POST /agent/system/chat` with message `"send login verification code {code} to email {email}"`
 4. SystemAgent checks email exists in DB → sends email via QQ SMTP
 
@@ -239,10 +244,9 @@ All endpoints return the unified `Result<T>` format:
 ```
 
 **Internal Flow:**
-1. Java generates 6-digit numeric code
-2. Stores in Redis: key `register:code:{email}`, value `"654321"`, TTL 60s
-3. Forwards to Python `POST /agent/system/chat` with message `"send register verification code {code} to email {email}"`
-4. SystemAgent checks email not registered → sends email via QQ SMTP
+1. Java forwards to Python `POST /agent/system/chat` with message `"send register verification code to email {email}"`
+2. SystemAgent checks email not registered → generates code → stores in Redis `register:code:{email}` → sends email
+3. Note: for register, code generation and Redis storage are handled by Python, not Java
 
 ---
 
@@ -258,7 +262,7 @@ All endpoints return the unified `Result<T>` format:
 ```json
 {
   "email": "user@example.com",
-  "code": "123456"
+  "code": "1234"
 }
 ```
 
@@ -288,10 +292,9 @@ All endpoints return the unified `Result<T>` format:
 **Internal Flow:**
 1. Retrieve stored code from Redis `login:code:{email}`
 2. Compare with user-provided code
-3. If match → forward to Python `POST /agent/system/chat` with message `"login user {email} with verification code {code}"`
-4. SystemAgent validates user → returns 200
-5. Delete Redis code → issue JWT tokens
-6. If mismatch or SystemAgent error → return error
+3. If match → delete Redis code → issue JWT tokens (access + refresh)
+4. If mismatch → return error
+5. **No Python call** — login is pure Java + Redis
 
 ---
 
@@ -324,13 +327,14 @@ All endpoints return the unified `Result<T>` format:
 **Internal Flow:**
 1. Retrieve stored code from Redis `register:code:{email}`
 2. Compare with user-provided code
-3. If match → forward to Python `POST /agent/system/chat` with message `"register new user {name} with email {email} and verification code {code}"`
-4. SystemAgent creates user → returns 200
-5. Delete Redis code → return success
+3. Check email not already in `user_info` via MyBatis Plus `LambdaQueryWrapper`
+4. If valid → insert user directly into `user_info` via `userInfoService.save(user)` → delete Redis code
+5. If mismatch or duplicate → return error
+6. **No Python call for user creation** — register inserts directly into shared DB
 
 ---
 
-### 4.4 Chat Endpoints (JWT Protected)
+### 4.4 Chat Endpoints (JWT Protected — 2 endpoints)
 
 #### 4.4.1 Send Message
 
@@ -358,7 +362,6 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiJ9...
 | Event | Data | Description |
 |-------|------|-------------|
 | `text` | `{"content":{"text":"...","done":false}}` | Streaming text chunk |
-| `chart` | `{"content":{"chart":"{...echarts JSON...}","done":false}}` | Chart data |
 | `done` | `{"content":"","done":true}` | Stream complete |
 | `error` | `{"message":"error description"}` | Error occurred |
 
@@ -366,16 +369,45 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiJ9...
 
 | Event | Data | Description |
 |-------|------|-------------|
-| `chart` | `{"data":"{echarts JSON}","code":200,"msg":"..."}` | Complete ECharts config |
+| `chart` | `{"data":"{...echarts JSON...}","code":200,"msg":"..."}` | Complete ECharts config |
 | `analyze` | `{"table":{...},"result":"...","json":"..."}` | Complete analysis result |
 
 **Internal Flow:**
 1. `JwtAuthFilter` validates JWT from `Authorization` header
-2. Extracts `userId` from token claims
+2. Extracts `userId` (email) from token `sub` claim
 3. Java `ChatServiceImpl` performs keyword matching on the question
-4. Routes to the appropriate Python agent endpoint:
-   - ECharts/Analyze → JSON response → wrapped as SSE event → frontend
-   - SQL/File/News/Train → SSE streaming → relayed to frontend
+4. Routes to the appropriate Python agent endpoint (see routing table below)
+5. Python SSE → Java relays as `text`/`chart`/`analyze`/`done`/`error` events via `SseEmitter`
+
+---
+
+#### 4.4.2 Upload File
+
+| Item | Description |
+|------|-------------|
+| Method | `POST` |
+| Path | `/api/chat/upload` |
+| Auth | Bearer JWT |
+| Content-Type | `multipart/form-data` |
+
+**Request:**
+```
+file: document.docx (multipart form field, .docx only)
+```
+
+**Response (200):**
+```json
+{
+  "code": 200,
+  "msg": "File uploaded successfully",
+  "data": "..."
+}
+```
+
+**Internal Flow:**
+1. Validate file is non-empty and has `.docx` extension
+2. Forward to Python `POST /upload` via RestTemplate (multipart)
+3. Return Python response to caller
 
 ---
 
@@ -389,13 +421,13 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiJ9...
 | Secret Key | `swpu-agent-jwt-secret-key-2026-i-always-like-xyhc` | Configurable via `jwt.secret-key` |
 | Access Token TTL | 30 minutes | Configurable via `jwt.access-token-expiration` |
 | Refresh Token TTL | 7 days | Configurable via `jwt.refresh-token-expiration` |
-| Refresh Token Format | 128-char hex | Non-JWT opaque token |
+| Refresh Token Format | 128-char hex | Non-JWT opaque token via `SecureRandom` |
 
 ### 5.2 Token Claims
 
 | Claim | Description |
 |-------|-------------|
-| `sub` | User email (used as userId) |
+| `sub` | User email (used as userId throughout the app) |
 | `role` | User role for permission checks |
 | `iat` | Issued at timestamp |
 | `exp` | Expiration timestamp |
@@ -404,12 +436,12 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiJ9...
 
 The `JwtAuthFilter` intercepts requests to these prefixes:
 
-| Path Prefix | Description |
-|-------------|-------------|
-| `/api/chat/*` | Chat endpoints |
-| `/api/db/*` | Database connection management |
-| `/api/viz/*` | Visualization generation |
-| `/api/user/*` | User profile |
+| Path Prefix | Controller Exists? |
+|-------------|-------------------|
+| `/api/chat/*` | ✅ ChatController |
+| `/api/db/*` | ❌ Not yet built |
+| `/api/viz/*` | ❌ Not yet built |
+| `/api/user/*` | ❌ Not yet built |
 
 ### 5.4 Request Attributes
 
@@ -417,16 +449,18 @@ After successful JWT validation, the filter injects these request attributes:
 
 | Attribute | Type | Source |
 |-----------|------|--------|
-| `userId` | String | JWT `sub` claim |
+| `userId` | String | JWT `sub` claim (email) |
 | `role` | String | JWT `role` claim |
 
 ### 5.5 Data Access Layer
 
-All 7 tables have full MyBatis Plus CRUD support using the standard pattern:
+All entities use the MyBatis Plus standard pattern:
 
 ```
 Entity → Mapper (extends BaseMapper<Entity>) → Service (extends IService<Entity>) → ServiceImpl (extends ServiceImpl<Mapper, Entity>)
 ```
+
+#### Business Entities (Python-owned tables, Java reads via MyBatis Plus)
 
 | Entity | Mapper | Service Interface | Service Impl | Table |
 |--------|--------|-------------------|-------------|-------|
@@ -438,6 +472,17 @@ Entity → Mapper (extends BaseMapper<Entity>) → Service (extends IService<Ent
 | `SalesOrders` | `SalesOrdersMapper` | `SalesOrdersService` | `SalesOrdersServiceImpl` | `sales_orders` |
 | `UserInfo` | `UserInfoMapper` | `UserInfoService` | `UserInfoServiceImpl` | `user_info` |
 
+#### Java-Owned Tables (DDL in `sql/init.sql`)
+
+| Table | Primary Key | Notes |
+|-------|-------------|-------|
+| `users` | id (auto) | JWT accounts — no MyBatis entity, not yet used by Java code |
+| `chat_sessions` | id (auto) | No MyBatis entity yet — not yet used |
+| `chat_messages` | id (auto) | No MyBatis entity yet — not yet used |
+| `db_connections` | id (auto) | No MyBatis entity yet — not yet used |
+| `queue_messages` | id (auto) | DDL only — no Java code uses this |
+| `tool_invocations` | id (auto) | DDL only — no Java code uses this |
+
 Each `BaseMapper<Entity>` provides built-in methods: `insert`, `deleteById`, `updateById`, `selectById`, `selectList`, `selectPage`.
 
 Each `IService<Entity>` / `ServiceImpl` adds: `save`, `saveBatch`, `removeById`, `updateById`, `getById`, `list`, `page`, `count`, plus lambda query wrappers.
@@ -448,11 +493,12 @@ Each `IService<Entity>` / `ServiceImpl` adds: `save`, `saveBatch`, `removeById`,
 
 | Purpose | Key Pattern | Value | TTL |
 |---------|-------------|-------|-----|
-| Login Code | `login:code:{email}` | 6-digit string (e.g. `"483156"`) | 60 seconds |
-| Register Code | `register:code:{email}` | 6-digit string | 60 seconds |
+| Login Code | `login:code:{email}` | 4-digit string (e.g. `"4831"`) | 60 seconds |
+| Register Code | `register:code:{email}` | code string | 60 seconds |
 
 - `{email}` is the user's email address
 - Keys auto-expire after TTL via `SETEX`
+- Login codes generated by Java; register codes generated by Python
 - Codes are deleted immediately after successful verification
 
 ---
@@ -469,13 +515,14 @@ Each `IService<Entity>` / `ServiceImpl` adds: `save`, `saveBatch`, `removeById`,
 
 | Java Method | Python Endpoint | Method | Response |
 |-------------|----------------|--------|----------|
-| `AgentClient.systemChat(message)` | `/agent/system/chat` | POST | JSON — send code / login / register |
-| `AgentClient.sqlChat(question, userId, ...)` | `/agent/sql/chat` | POST | SSE streaming |
-| `AgentClient.echartsGenerate(question, userId)` | `/agent/echarts/generate` | POST | JSON (ECharts config) |
-| `AgentClient.analyze(question, userId)` | `/agent/analyze` | POST | JSON (table + analysis + chart) |
-| `AgentClient.fileChat(question, userId, ...)` | `/agent/file/chat` | POST | SSE streaming |
-| `AgentClient.newsChat(question, userId, ...)` | `/agent/news/chat` | POST | SSE streaming |
-| `AgentClient.trainChat(question, userId, ...)` | `/agent/train/chat` | POST | SSE streaming |
+| `AgentClient.systemChat(msg, email)` | `/agent/system/chat` | POST | JSON — send code / email |
+| `AgentClient.sqlChat(q, uid, cb)` | `/agent/sql/chat` | POST | SSE streaming (default route) |
+| `AgentClient.echartsGenerate(q, uid)` | `/agent/echarts/generate` | POST | JSON (ECharts config) |
+| `AgentClient.analyze(q, uid)` | `/agent/analyze` | POST | JSON (table + analysis + chart) |
+| `AgentClient.fileChat(q, uid, cb)` | `/agent/file/chat` | POST | SSE streaming |
+| `AgentClient.newsChat(q, uid, cb)` | `/agent/news/chat` | POST | SSE streaming |
+| `AgentClient.trainChat(q, uid, cb)` | `/agent/train/chat` | POST | SSE streaming |
+| `AgentClient.uploadFile(file)` | `/upload` | POST | multipart/form-data |
 
 ### 7.3 Agent Request/Response Formats
 
@@ -483,12 +530,15 @@ Each `IService<Entity>` / `ServiceImpl` adds: `save`, `saveBatch`, `removeById`,
 
 Request:
 ```json
-{ "message": "send login verification code 483156 to email user@example.com" }
+{
+  "message": "send login verification code 4831 to email user@example.com",
+  "user_id": "user@example.com"
+}
 ```
 
 Response (success):
 ```json
-{ "data": "483156", "code": "200", "msg": "Sent successfully" }
+{ "data": "4831", "code": "200", "msg": "Sent successfully" }
 ```
 
 Response (failure — email not registered):
@@ -503,7 +553,7 @@ Request:
 { "question": "Show top 5 products by sales", "user_id": "user@example.com" }
 ```
 
-Response: SSE stream with `data:` prefixed JSON lines.
+Response: SSE stream with `data:` prefixed JSON lines. Java strips the `data:` prefix, parses JSON, and relays as named SSE events.
 
 **ECharts Agent** (`POST /agent/echarts/generate`):
 
@@ -533,25 +583,23 @@ Response:
 }
 ```
 
-### 7.4 Auth Flow (via SystemAgent)
+### 7.4 Auth Flow — Python vs Java Boundaries
 
-Java communicates with Python SystemAgent for all auth operations:
-
-| Operation | SystemAgent Message | Description |
-|-----------|-------------------|-------------|
-| Send login code | `"send login verification code {code} to email {email}"` | SystemAgent checks email exists → sends email |
-| Send register code | `"send register verification code {code} to email {email}"` | SystemAgent checks email not registered → sends email |
-| Login | `"login user {email} with verification code {code}"` | SystemAgent validates user credentials |
-| Register | `"register new user {name} with email {email} and verification code {code}"` | SystemAgent creates user record |
+| Operation | Java Responsibility | Python Responsibility |
+|-----------|--------------------|-----------------------|
+| Send login code | Generate 4-digit code → Redis → forward message to SystemAgent | Validate email exists → send email |
+| Send register code | Forward message to SystemAgent | Generate code → Redis → validate email not registered → send email |
+| Login | Verify Redis code → issue JWT | **Not called** |
+| Register | Verify Redis code → check duplicate → insert into user_info via MyBatis Plus | **Not called for user creation** |
 
 ### 7.5 Chat Routing (by Java Wrapper)
 
-The Java `ChatServiceImpl` performs keyword matching and dispatches to the correct Python agent:
+The Java `ChatServiceImpl.sendMessage()` performs keyword matching and dispatches to the correct Python agent:
 
 ```
 POST /api/chat/send { "question": "xxx" }
     ├── contains "图表" / "chart" / "图"           → POST /agent/echarts/generate (JSON)
-    ├── contains "数据分析" / "analyze"              → POST /agent/analyze (JSON)
+    ├── contains "数据分析" / "分析数据" / "analyze"  → POST /agent/analyze (JSON)
     ├── contains "上传文件成功" / "file"              → POST /agent/file/chat (SSE)
     ├── contains "新闻" / "热点" / "news"            → POST /agent/news/chat (SSE)
     ├── contains "火车" / "高铁" / "车票" / "train"   → POST /agent/train/chat (SSE)
@@ -562,21 +610,32 @@ POST /api/chat/send { "question": "xxx" }
 
 ## 8. Database Schema
 
-### 8.1 Java-Owned Tables
+### 8.1 Java-Owned Tables (in `sql/init.sql`)
 
-The Java wrapper manages these tables via MyBatis Plus:
+These tables are created by Java's init script. DDL only — most have no corresponding MyBatis Plus entities yet.
 
-| Table | Entity | Primary Key | Description |
-|-------|--------|-------------|-------------|
-| `customer` | `Customer.java` | `user_id` | Customer profile data |
-| `customer_behavior` | `CustomerBehavior.java` | — | User behavior tracking |
-| `orders` | `Orders.java` | `order_id` | Order records |
-| `products` | `Products.java` | `product_id` | Product catalog |
-| `sales` | `Sales.java` | — | Monthly sales statistics |
-| `sales_orders` | `SalesOrders.java` | `id` (AUTO_INCREMENT) | Simplified sales orders |
-| `user_info` | `UserInfo.java` | `id` | Python agent user table |
+| # | Table | Has Entity? | Notes |
+|---|-------|-------------|-------|
+| 1 | `users` | ❌ | JWT accounts: username, password_hash, email, role, refresh_token |
+| 2 | `chat_sessions` | ❌ | FK → user_info(id) ON DELETE CASCADE |
+| 3 | `chat_messages` | ❌ | FK → chat_sessions(id); role ENUM(USER/ASSISTANT/SYSTEM/TOOL); message_type ENUM(TEXT/SQL/CHART/THINKING/ERROR) |
+| 4 | `db_connections` | ❌ | FK → user_info(id); encrypted_password for external DBs |
+| 5 | `queue_messages` | ❌ | Message queue tracking — DDL only, no Java code uses this |
+| 6 | `tool_invocations` | ❌ | FK → chat_messages(id); agent tool call audit log |
 
-### 8.2 MyBatis Plus Configuration
+### 8.2 Python-Owned Tables (Java reads via MyBatis Plus)
+
+| Table | Entity | Notes |
+|-------|--------|-------|
+| `user_info` | `UserInfo.java` | id, user_name, email, role. Java reads + inserts directly (register) |
+| `customer` | `Customer.java` | user_id, username, registration_date, country, age, gender, total_spent, order_count |
+| `customer_behavior` | `CustomerBehavior.java` | User behavior tracking |
+| `orders` | `Orders.java` | order_id, order records |
+| `products` | `Products.java` | product_id, product catalog |
+| `sales` | `Sales.java` | Monthly sales statistics |
+| `sales_orders` | `SalesOrders.java` | id (auto), simplified sales orders |
+
+### 8.3 MyBatis Plus Configuration
 
 ```yaml
 mybatis-plus:
@@ -593,7 +652,7 @@ mybatis-plus:
 
 ## 9. Configuration Reference
 
-### 9.1 application.yaml
+### 9.1 application.yaml (single file, no profiles)
 
 ```yaml
 server:
@@ -603,12 +662,16 @@ spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://192.168.158.56:3306/agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
-    username: root
-    password: root
+    username: zl
+    password: 123456
   data:
     redis:
       host: 192.168.158.56
       port: 6379
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
 
 jwt:
   secret-key: swpu-agent-jwt-secret-key-2026-i-always-like-xyhc
@@ -639,18 +702,17 @@ mybatis-plus:
 | JDK | 17+ | Java runtime |
 | Maven | 3.8+ | Build tool |
 | MySQL | 8.0 | Data storage |
-| Redis | 6.0+ | Code cache |
+| Redis | 7.x | Code cache |
 | Python Agent | — | Business logic backend (port 8000) |
 
 ### 10.2 Quick Start
 
 ```bash
-# 1. Start MySQL + Redis
+# 1. Start MySQL + Redis (auto-creates agent DB and Java tables)
 docker-compose up -d
 
-# 2. Initialize database
+# 2. Ensure InnoDB for user_info (required for FK support)
 mysql -u root -proot agent -e "ALTER TABLE user_info ENGINE=InnoDB"
-mysql -u root -proot < sql/init.sql
 
 # 3. Start Python agent (separate terminal)
 cd agent-py && python main.py
@@ -663,24 +725,21 @@ mvn spring-boot:run
 ### 10.3 Verify
 
 ```bash
-# Health check
-curl http://localhost:8080/api/health
-
-# Send login code
+# Health check (not yet implemented — use auth test instead)
 curl -X POST http://localhost:8080/api/auth/send_code \
   -H "Content-Type: application/json" \
-  -d '{"email": "2972526358@qq.com"}'
+  -d '{"email": "test@example.com"}'
 
-# Login (use code from email)
+# Login (use code from Redis)
 curl -X POST http://localhost:8080/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email": "2972526358@qq.com", "code": "123456"}'
+  -d '{"email": "test@example.com", "code": "4831"}'
 
 # Chat (replace TOKEN with accessToken from login response)
-curl -X POST http://localhost:8080/api/chat/send \
+curl -N -X POST http://localhost:8080/api/chat/send \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer TOKEN" \
-  -d '{"question": "View all products"}'
+  -d '{"question": "Show all products"}'
 ```
 
 ---
@@ -720,13 +779,13 @@ The `GlobalExceptionHandler` (`@RestControllerAdvice`) catches:
 
 | Concern | Mitigation |
 |---------|------------|
-| Code brute force | 6-digit codes, 60s TTL in Redis, auto-expiry |
+| Code brute force | 4-digit codes, 60s TTL in Redis, auto-expiry |
 | Token theft | JWT access token 30min TTL; refresh token rotation |
 | Replay attacks | Codes deleted after first successful use |
 | Python agent unavailable | Java catches exceptions, returns 500 with message |
 | CORS | Allow all origins (dev); restrict in production |
 | SQL injection | Parameterized queries via MyBatis Plus; Python agent has 3-layer SQL defense |
-| Path traversal | Not applicable — no file operations in Java layer |
+| Path traversal | Not applicable — no file server operations in Java (only .docx upload to Python) |
 
 ---
 
@@ -734,7 +793,7 @@ The `GlobalExceptionHandler` (`@RestControllerAdvice`) catches:
 
 | Category | Files | Count |
 |----------|-------|-------|
-| Config | `RedisConfig`, `CorsConfig`, `application.yaml` | 3 |
+| Config | `CorsConfig`, `RedisConfig`, `application.yaml` | 3 |
 | Security | `JwtUtil`, `JwtAuthFilter` | 2 |
 | Agent Client | `AgentClient` | 1 |
 | Controllers | `AuthController`, `ChatController` | 2 |
@@ -747,3 +806,20 @@ The `GlobalExceptionHandler` (`@RestControllerAdvice`) catches:
 | Utils | `Result`, `ResultCode` | 2 |
 | Exception | `GlobalExceptionHandler` | 1 |
 | **Total** | | **56** |
+
+---
+
+## 14. What's Not Yet Built
+
+| Feature | Status |
+|---------|--------|
+| DB Connections CRUD (`/api/db/*`) | ❌ DDL exists; no controller/service |
+| Visualization (`/api/viz/*`) | ❌ No controller (Python agent ready) |
+| User Profile (`/api/user/*`) | ❌ No controller (UserInfo mapper ready) |
+| Health endpoint (`/api/health`) | ❌ No controller |
+| Refresh token endpoint | ❌ Token generation exists; no exchange endpoint |
+| Chat session persistence | ❌ chat_sessions/chat_messages DDL exists; no Java code uses them |
+| Message queue system | ❌ queue_messages DDL exists; no consumer/producer code |
+| Tool invocation audit | ❌ tool_invocations DDL exists; no Java code writes to it |
+| Real SMTP email (Java-side) | ❌ Email handled by Python SystemAgent |
+| Integration tests | ❌ Only `@SpringBootTest` context-load test |

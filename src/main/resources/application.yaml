@@ -7,6 +7,13 @@ spring:
     url: jdbc:mysql://192.168.158.56:3306/agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
     username: zl
     password: 123456
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      keepalive-time: 300000
+      connection-timeout: 30000
   data:
     redis:
       host: 192.168.158.56
