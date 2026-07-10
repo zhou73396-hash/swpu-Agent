@@ -21,11 +21,13 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.Objects;
 import java.util.function.Consumer;
 
 @Slf4j
@@ -45,20 +47,10 @@ public class AgentClient {
                 .body(body.toString())
                 .timeout(30000)
                 .execute()) {
-            String resultBody = response.body();
-            log.info("SystemAgent response: {}", resultBody);
-            return JSONUtil.parseObj(resultBody);
+            return parseJsonResponse(response, "SystemAgent");
         } catch (Exception e) {
-            log.error("SystemAgent call failed: {}", e.getMessage());
-            JSONObject error = new JSONObject();
-            error.set("code", "500");
-            error.set("msg", "System agent unavailable: " + e.getMessage());
-            return error;
+            throw mapException("SystemAgent", e);
         }
-    }
-
-    public void sqlChat(String question, String userId, Consumer<String> onEvent) {
-        streamChat("/agent/sql/chat", question, userId, onEvent);
     }
 
     public JSONObject echartsGenerate(String question, String userId) {
@@ -72,15 +64,9 @@ public class AgentClient {
                 .body(body.toString())
                 .timeout(60000)
                 .execute()) {
-            String resultBody = response.body();
-            log.info("EchartsAgent response: {}", resultBody);
-            return JSONUtil.parseObj(resultBody);
+            return parseJsonResponse(response, "EchartsAgent");
         } catch (Exception e) {
-            log.error("EchartsAgent call failed: {}", e.getMessage());
-            JSONObject error = new JSONObject();
-            error.set("code", 500);
-            error.set("msg", "ECharts agent unavailable: " + e.getMessage());
-            return error;
+            throw mapException("EchartsAgent", e);
         }
     }
 
@@ -95,15 +81,9 @@ public class AgentClient {
                 .body(body.toString())
                 .timeout(60000)
                 .execute()) {
-            String resultBody = response.body();
-            log.info("AnalyzeAgent response: {}", resultBody);
-            return JSONUtil.parseObj(resultBody);
+            return parseJsonResponse(response, "AnalyzeAgent");
         } catch (Exception e) {
-            log.error("AnalyzeAgent call failed: {}", e.getMessage());
-            JSONObject error = new JSONObject();
-            error.set("code", 500);
-            error.set("msg", "Analyze agent unavailable: " + e.getMessage());
-            return error;
+            throw mapException("AnalyzeAgent", e);
         }
     }
 
@@ -127,41 +107,54 @@ public class AgentClient {
 
             RestTemplate restTemplate = new RestTemplate(createRequestFactory());
             String responseBody = restTemplate.postForObject(url, new HttpEntity<>(body, headers), String.class);
-            log.info("File upload response: {}", responseBody);
+            if (!StringUtils.hasText(responseBody) || !JSONUtil.isTypeJSON(responseBody)) {
+                throw new AgentClientException(AgentErrorCode.PROTOCOL_ERROR,
+                        "File upload returned invalid JSON", (Integer) null);
+            }
+            log.debug("File upload call succeeded");
             return JSONUtil.parseObj(responseBody);
         } catch (HttpStatusCodeException e) {
             String responseBody = e.getResponseBodyAsString();
-            log.error("File upload failed with status {}: {}", e.getStatusCode(), responseBody);
-            return parseUploadError(responseBody, e.getMessage());
+            throw new AgentClientException(AgentErrorCode.HTTP_ERROR,
+                    "File upload returned HTTP " + e.getStatusCode().value() + formatBodySuffix(responseBody),
+                    e.getStatusCode().value());
         } catch (Exception e) {
-            log.error("File upload failed: {}", e.getMessage());
-            JSONObject error = new JSONObject();
-            error.set("code", 500);
-            error.set("msg", "File upload unavailable: " + e.getMessage());
-            return error;
+            throw mapException("File upload", e);
         }
     }
 
-    public void fileChat(String question, String userId, Consumer<String> onEvent) {
-        streamChat("/agent/file/chat", question, userId, onEvent);
+    public void sqlChat(String question, String userId, Consumer<String> onEvent,
+                        AgentStreamCancellation cancellation) {
+        streamChat("/agent/sql/chat", question, userId, onEvent, cancellation);
     }
 
-    public void newsChat(String question, String userId, Consumer<String> onEvent) {
-        streamChat("/agent/news/chat", question, userId, onEvent);
+    public void fileChat(String question, String userId, Consumer<String> onEvent,
+                         AgentStreamCancellation cancellation) {
+        streamChat("/agent/file/chat", question, userId, onEvent, cancellation);
     }
 
-    public void trainChat(String question, String userId, Consumer<String> onEvent) {
-        streamChat("/agent/train/chat", question, userId, onEvent);
+    public void newsChat(String question, String userId, Consumer<String> onEvent,
+                         AgentStreamCancellation cancellation) {
+        streamChat("/agent/news/chat", question, userId, onEvent, cancellation);
     }
 
-    private void streamChat(String path, String question, String userId, Consumer<String> onEvent) {
+    public void trainChat(String question, String userId, Consumer<String> onEvent,
+                          AgentStreamCancellation cancellation) {
+        streamChat("/agent/train/chat", question, userId, onEvent, cancellation);
+    }
+
+    private void streamChat(String path, String question, String userId, Consumer<String> onEvent,
+                            AgentStreamCancellation cancellation) {
         String url = baseUrl + path;
         JSONObject body = new JSONObject();
         body.set("question", question);
         body.set("user_id", userId);
 
+        HttpURLConnection conn = null;
         try {
-            HttpURLConnection conn = (HttpURLConnection) new URI(url).toURL().openConnection();
+            conn = (HttpURLConnection) new URI(url).toURL().openConnection();
+            HttpURLConnection connection = conn;
+            cancellation.bind(connection::disconnect);
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setRequestProperty("Accept", "text/event-stream");
@@ -172,10 +165,20 @@ public class AgentClient {
             byte[] input = body.toString().getBytes(StandardCharsets.UTF_8);
             conn.getOutputStream().write(input);
 
+            int status = conn.getResponseCode();
+            if (status < 200 || status >= 300) {
+                String errorBody = readBody(conn.getErrorStream());
+                throw new AgentClientException(AgentErrorCode.HTTP_ERROR,
+                        "Agent returned HTTP " + status + formatBodySuffix(errorBody), status);
+            }
+
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
+                    if (cancellation.isCancelled()) {
+                        throw new AgentStreamCancelledException();
+                    }
                     if (line.startsWith("data:")) {
                         String data = line.substring(5).trim();
                         if (StrUtil.isNotBlank(data)) {
@@ -184,12 +187,20 @@ public class AgentClient {
                     }
                 }
             }
-            conn.disconnect();
+            if (cancellation.isCancelled()) {
+                throw new AgentStreamCancelledException();
+            }
+        } catch (AgentStreamCancelledException e) {
+            throw e;
         } catch (Exception e) {
-            log.error("SSE stream {} failed: {}", path, e.getMessage());
-            onEvent.accept("{\"content\":{\"text\":\"Agent service error: " +
-                    e.getMessage() + "\",\"done\":false},\"done\":false}");
-            onEvent.accept("{\"content\":\"\",\"done\":true}");
+            if (cancellation.isCancelled()) {
+                throw new AgentStreamCancelledException();
+            }
+            throw mapException(path, e);
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
         }
     }
 
@@ -200,14 +211,51 @@ public class AgentClient {
         return factory;
     }
 
-    private JSONObject parseUploadError(String responseBody, String fallbackMessage) {
-        if (StringUtils.hasText(responseBody) && JSONUtil.isTypeJSON(responseBody)) {
-            return JSONUtil.parseObj(responseBody);
+    private JSONObject parseJsonResponse(HttpResponse response, String agentName) {
+        int status = response.getStatus();
+        String responseBody = response.body();
+        if (status < 200 || status >= 300) {
+            throw new AgentClientException(AgentErrorCode.HTTP_ERROR,
+                    agentName + " returned HTTP " + status + formatBodySuffix(responseBody), status);
         }
-        JSONObject error = new JSONObject();
-        error.set("code", 500);
-        error.set("msg", Objects.requireNonNullElse(fallbackMessage, "File upload failed"));
-        return error;
+        if (!StringUtils.hasText(responseBody) || !JSONUtil.isTypeJSON(responseBody)) {
+            throw new AgentClientException(AgentErrorCode.PROTOCOL_ERROR,
+                    agentName + " returned invalid JSON", status);
+        }
+        log.debug("{} call succeeded with status {}", agentName, status);
+        return JSONUtil.parseObj(responseBody);
+    }
+
+    private AgentClientException mapException(String agentName, Exception exception) {
+        if (exception instanceof AgentClientException agentClientException) {
+            return agentClientException;
+        }
+        if (exception instanceof SocketTimeoutException) {
+            return new AgentClientException(AgentErrorCode.READ_TIMEOUT,
+                    agentName + " timed out", exception);
+        }
+        String message = exception.getMessage();
+        if (message != null && message.toLowerCase().contains("timed out")) {
+            return new AgentClientException(AgentErrorCode.READ_TIMEOUT,
+                    agentName + " timed out", exception);
+        }
+        return new AgentClientException(AgentErrorCode.UNAVAILABLE,
+                agentName + " is unavailable", exception);
+    }
+
+    private String readBody(InputStream inputStream) throws IOException {
+        if (inputStream == null) {
+            return "";
+        }
+        return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
+    }
+
+    private String formatBodySuffix(String body) {
+        if (!StringUtils.hasText(body)) {
+            return "";
+        }
+        String compact = body.replaceAll("\\s+", " ").trim();
+        return ": " + compact.substring(0, Math.min(compact.length(), 300));
     }
 
     private String sanitizeFilename(String originalFilename) {

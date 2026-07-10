@@ -2,9 +2,12 @@ package com.swpuagent.controller;
 
 import cn.hutool.json.JSONObject;
 import com.swpuagent.agent.AgentClient;
+import com.swpuagent.common.auth.AuthErrorCode;
+import com.swpuagent.common.auth.AuthException;
 import com.swpuagent.dto.request.ChatSendRequest;
+import com.swpuagent.security.UserContext;
+import com.swpuagent.security.UserContextHolder;
 import com.swpuagent.service.ChatService;
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
@@ -31,22 +34,24 @@ public class ChatController {
      * JWT protected — userId extracted from token by JwtAuthFilter.
      */
     @PostMapping("/send")
-    public SseEmitter send(@Valid @RequestBody ChatSendRequest request, HttpServletRequest httpRequest) {
-        String userId = (String) httpRequest.getAttribute("userId");
-        if (userId == null) {
-            throw new RuntimeException("User not authenticated");
-        }
-        return chatService.sendMessage(request.getQuestion(), userId);
+    public SseEmitter send(@Valid @RequestBody ChatSendRequest request) {
+        UserContext userContext = currentUser();
+        return chatService.sendMessage(request.getQuestion(), userContext.userId(), userContext.email());
     }
 
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public JSONObject upload(@RequestParam("file") MultipartFile file, HttpServletRequest httpRequest) {
-        String userId = (String) httpRequest.getAttribute("userId");
-        if (userId == null) {
-            throw new RuntimeException("User not authenticated");
-        }
+    public JSONObject upload(@RequestParam("file") MultipartFile file) {
+        currentUser();
         validateUpload(file);
         return agentClient.uploadFile(file);
+    }
+
+    private UserContext currentUser() {
+        UserContext userContext = UserContextHolder.get();
+        if (userContext == null) {
+            throw new AuthException(AuthErrorCode.AUTH_ACCESS_TOKEN_MISSING);
+        }
+        return userContext;
     }
 
     private void validateUpload(MultipartFile file) {

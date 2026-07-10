@@ -1,5 +1,11 @@
 package com.swpuagent.security;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.swpuagent.common.auth.ApiErrorResponse;
+import com.swpuagent.common.auth.AuthErrorCode;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.ExpiredJwtException;
+import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -15,6 +21,7 @@ import java.io.IOException;
 public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final JwtUtil jwtUtil;
+    private final ObjectMapper objectMapper;
 
     private static final String[] PROTECTED_PATHS = {
             "/api/chat/",
@@ -35,24 +42,41 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
         String authHeader = request.getHeader("Authorization");
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            response.setContentType("application/json;charset=UTF-8");
-            response.getWriter().write("{\"code\":401,\"message\":\"Missing or invalid token\"}");
+            writeError(response, AuthErrorCode.AUTH_ACCESS_TOKEN_MISSING);
             return;
         }
 
         String token = authHeader.substring(7);
-        if (!jwtUtil.validateToken(token)) {
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            response.setContentType("application/json;charset=UTF-8");
-            response.getWriter().write("{\"code\":401,\"message\":\"Invalid or expired token\"}");
+        UserContext userContext;
+        try {
+            Claims claims = jwtUtil.parseToken(token);
+            if (!"access".equals(claims.get("type", String.class))) {
+                writeError(response, AuthErrorCode.AUTH_ACCESS_TOKEN_INVALID);
+                return;
+            }
+            userContext = new UserContext(
+                    Long.valueOf(claims.getSubject()),
+                    claims.get("email", String.class),
+                    claims.get("role", String.class)
+            );
+            if (userContext.email() == null || userContext.role() == null) {
+                writeError(response, AuthErrorCode.AUTH_ACCESS_TOKEN_INVALID);
+                return;
+            }
+        } catch (ExpiredJwtException ex) {
+            writeError(response, AuthErrorCode.AUTH_ACCESS_TOKEN_EXPIRED);
+            return;
+        } catch (JwtException | IllegalArgumentException ex) {
+            writeError(response, AuthErrorCode.AUTH_ACCESS_TOKEN_INVALID);
             return;
         }
 
-        request.setAttribute("userId", jwtUtil.getUserIdFromToken(token));
-        request.setAttribute("role", jwtUtil.getRoleFromToken(token));
-
-        filterChain.doFilter(request, response);
+        UserContextHolder.set(userContext);
+        try {
+            filterChain.doFilter(request, response);
+        } finally {
+            UserContextHolder.clear();
+        }
     }
 
     private boolean isProtected(String path) {
@@ -62,5 +86,11 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             }
         }
         return false;
+    }
+
+    private void writeError(HttpServletResponse response, AuthErrorCode errorCode) throws IOException {
+        response.setStatus(errorCode.getHttpStatus().value());
+        response.setContentType("application/json;charset=UTF-8");
+        objectMapper.writeValue(response.getWriter(), ApiErrorResponse.of(errorCode, errorCode.getMessage()));
     }
 }

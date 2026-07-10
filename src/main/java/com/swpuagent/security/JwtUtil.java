@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
+import java.util.UUID;
 
 @Component
 public class JwtUtil {
@@ -26,23 +27,28 @@ public class JwtUtil {
         return Keys.hmacShaKeyFor(secretKey.getBytes(StandardCharsets.UTF_8));
     }
 
-    public String generateAccessToken(String userId, String role) {
+    public String generateAccessToken(Long userId, String email, String role) {
         return Jwts.builder()
-                .subject(userId)
+                .subject(userId.toString())
+                .id(UUID.randomUUID().toString())
+                .claim("email", email)
                 .claim("role", role)
+                .claim("type", "access")
                 .issuedAt(new Date())
                 .expiration(new Date(System.currentTimeMillis() + accessTokenExpiration))
                 .signWith(getSigningKey())
                 .compact();
     }
 
-    public String generateRefreshToken() {
-        StringBuilder sb = new StringBuilder();
-        java.security.SecureRandom random = new java.security.SecureRandom();
-        for (int i = 0; i < 128; i++) {
-            sb.append(Integer.toHexString(random.nextInt(16)));
-        }
-        return sb.toString();
+    public String generateRefreshToken(Long userId, String jti) {
+        return Jwts.builder()
+                .subject(userId.toString())
+                .id(jti)
+                .claim("type", "refresh")
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + refreshTokenExpiration))
+                .signWith(getSigningKey())
+                .compact();
     }
 
     public Claims parseToken(String token) {
@@ -53,29 +59,11 @@ public class JwtUtil {
                 .getPayload();
     }
 
-    public boolean isTokenExpired(String token) {
-        try {
-            Claims claims = parseToken(token);
-            return claims.getExpiration().before(new Date());
-        } catch (Exception e) {
-            return true;
-        }
+    public long getAccessTokenExpiresInSeconds() {
+        return accessTokenExpiration / 1000;
     }
 
-    public boolean validateToken(String token) {
-        try {
-            parseToken(token);
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    public String getUserIdFromToken(String token) {
-        return parseToken(token).getSubject();
-    }
-
-    public String getRoleFromToken(String token) {
-        return parseToken(token).get("role", String.class);
+    public long getRefreshTokenExpiresInSeconds() {
+        return refreshTokenExpiration / 1000;
     }
 }

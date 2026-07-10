@@ -3,14 +3,22 @@ package com.swpuagent.service.impl;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.swpuagent.agent.AgentClient;
+import com.swpuagent.agent.AgentClientException;
+import com.swpuagent.agent.AgentErrorCode;
+import com.swpuagent.agent.AgentStreamCancellation;
+import com.swpuagent.agent.AgentStreamCancelledException;
 import com.swpuagent.service.ChatService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.TaskExecutor;
+import org.springframework.core.task.TaskRejectedException;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
 @Service
@@ -19,156 +27,199 @@ public class ChatServiceImpl implements ChatService {
 
     private final AgentClient agentClient;
 
+    @Qualifier("sseExecutor")
+    private final TaskExecutor sseExecutor;
+
     @Override
-    public SseEmitter sendMessage(String question, String userId) {
+    public SseEmitter sendMessage(String question, Long userId, String email) {
+        log.debug("Dispatching chat request, userId={}", userId);
         String lowerQuestion = question.toLowerCase(Locale.ROOT);
-        if (question.contains("\u56fe\u8868") || lowerQuestion.contains("chart") || question.contains("\u56fe")) {
-            return handleEcharts(question, userId);
-        } else if (question.contains("\u6570\u636e\u5206\u6790")
-                || question.contains("\u5206\u6790\u6570\u636e")
+        if (question.contains("图表") || lowerQuestion.contains("chart") || question.contains("图")) {
+            return handleJsonAgent(question, email, "chart");
+        } else if (question.contains("数据分析")
+                || question.contains("分析数据")
                 || lowerQuestion.contains("analyze")) {
-            return handleAnalyze(question, userId);
-        } else if (question.contains("\u4e0a\u4f20\u6587\u4ef6\u6210\u529f") || lowerQuestion.contains("file")) {
-            return handleStreaming(question, userId, "file");
-        } else if (question.contains("\u65b0\u95fb") || question.contains("\u70ed\u70b9") || lowerQuestion.contains("news")) {
-            return handleNewsStreaming(question, userId);
-        } else if (question.contains("\u706b\u8f66")
-                || question.contains("\u9ad8\u94c1")
-                || question.contains("\u8f66\u7968")
-                || lowerQuestion.contains("train")
-                || lowerQuestion.contains("train ticket")) {
-            return handleTrainStreaming(question, userId);
+            return handleJsonAgent(question, email, "analyze");
+        } else if (question.contains("上传文件成功") || lowerQuestion.contains("file")) {
+            return handleStreaming(question, email, "file");
+        } else if (question.contains("新闻") || question.contains("热点") || lowerQuestion.contains("news")) {
+            return handleStreaming(question, email, "news");
+        } else if (question.contains("火车")
+                || question.contains("高铁")
+                || question.contains("车票")
+                || lowerQuestion.contains("train")) {
+            return handleStreaming(question, email, "train");
         }
-        return handleSqlStreaming(question, userId);
-    }
-
-    private SseEmitter handleSqlStreaming(String question, String userId) {
-        return createStreamEmitter(onEvent -> agentClient.sqlChat(question, userId, onEvent));
-    }
-
-    private SseEmitter handleNewsStreaming(String question, String userId) {
-        return createStreamEmitter(onEvent -> agentClient.newsChat(question, userId, onEvent));
-    }
-
-    private SseEmitter handleTrainStreaming(String question, String userId) {
-        return createStreamEmitter(onEvent -> agentClient.trainChat(question, userId, onEvent));
+        return handleStreaming(question, email, "sql");
     }
 
     private SseEmitter handleStreaming(String question, String userId, String agentType) {
-        return createStreamEmitter(onEvent -> {
-            if ("file".equals(agentType)) {
-                agentClient.fileChat(question, userId, onEvent);
-            }
-        });
-    }
-
-    private SseEmitter createStreamEmitter(AgentStreamCall call) {
         SseEmitter emitter = new SseEmitter(120000L);
+        StreamLifecycle lifecycle = new StreamLifecycle(emitter, agentType);
+        lifecycle.registerCallbacks();
 
-        new Thread(() -> {
-            try {
-                call.execute(eventData -> {
-                    try {
-                        if (eventData == null || eventData.isEmpty()) {
-                            return;
-                        }
-                        JSONObject parsed = JSONUtil.parseObj(eventData);
+        try {
+            sseExecutor.execute(() -> {
+                try {
+                    AgentStreamCall call = switch (agentType) {
+                        case "file" -> agentClient::fileChat;
+                        case "news" -> agentClient::newsChat;
+                        case "train" -> agentClient::trainChat;
+                        default -> agentClient::sqlChat;
+                    };
+                    call.execute(question, userId, lifecycle::forwardEvent, lifecycle.cancellation());
+                    lifecycle.complete();
+                } catch (AgentStreamCancelledException ignored) {
+                    log.debug("Agent stream cancelled, type={}", agentType);
+                } catch (AgentClientException ex) {
+                    lifecycle.fail(ex.getErrorCode(), ex.getMessage());
+                } catch (Exception ex) {
+                    log.error("Unexpected chat stream failure, type={}", agentType, ex);
+                    lifecycle.fail(AgentErrorCode.UNAVAILABLE, "Unexpected Agent stream error");
+                }
+            });
+        } catch (TaskRejectedException ex) {
+            lifecycle.fail(AgentErrorCode.UNAVAILABLE, "Agent gateway is busy");
+        }
+        return emitter;
+    }
 
-                        if (parsed.getBool("done", false)) {
-                            emitter.send(SseEmitter.event()
-                                    .name("done")
-                                    .data(eventData));
-                            emitter.complete();
-                        } else if (parsed.containsKey("content")) {
-                            Object content = parsed.get("content");
-                            if (content instanceof JSONObject) {
-                                emitter.send(SseEmitter.event()
-                                        .name("text")
-                                        .data(eventData));
-                            } else if (content instanceof String && !((String) content).isEmpty()) {
-                                emitter.send(SseEmitter.event()
-                                        .name("text")
-                                        .data(eventData));
-                            }
-                        }
-                    } catch (IOException e) {
-                        log.error("SSE send error: {}", e.getMessage());
-                        emitter.completeWithError(e);
+    private SseEmitter handleJsonAgent(String question, String userId, String eventName) {
+        SseEmitter emitter = new SseEmitter(60000L);
+        StreamLifecycle lifecycle = new StreamLifecycle(emitter, eventName);
+        lifecycle.registerCallbacks();
+
+        try {
+            sseExecutor.execute(() -> {
+                try {
+                    JSONObject result = "chart".equals(eventName)
+                            ? agentClient.echartsGenerate(question, userId)
+                            : agentClient.analyze(question, userId);
+                    if (result.getInt("code", 500) == 200) {
+                        lifecycle.send(eventName, result.toString());
+                        lifecycle.complete();
+                    } else {
+                        lifecycle.fail(AgentErrorCode.PROTOCOL_ERROR, "Agent returned a business error");
                     }
-                });
-
-                try {
-                    emitter.complete();
-                } catch (Exception ignored) {
+                } catch (AgentClientException ex) {
+                    lifecycle.fail(ex.getErrorCode(), ex.getMessage());
+                } catch (Exception ex) {
+                    log.error("Unexpected JSON Agent failure, type={}", eventName, ex);
+                    lifecycle.fail(AgentErrorCode.UNAVAILABLE, "Unexpected Agent error");
                 }
-            } catch (Exception e) {
-                log.error("Chat streaming error: {}", e.getMessage());
-                try {
-                    emitter.send(SseEmitter.event()
-                            .name("error")
-                            .data("{\"message\":\"Service error: " + e.getMessage() + "\"}"));
-                } catch (IOException ex) {
-                    log.error("SSE error send failed: {}", ex.getMessage());
-                }
-                emitter.completeWithError(e);
-            }
-        }).start();
-
-        return emitter;
-    }
-
-    private SseEmitter handleEcharts(String question, String userId) {
-        SseEmitter emitter = new SseEmitter(60000L);
-
-        new Thread(() -> {
-            try {
-                JSONObject result = agentClient.echartsGenerate(question, userId);
-                if (result.getInt("code", 500) == 200) {
-                    emitter.send(SseEmitter.event()
-                            .name("chart")
-                            .data(result.toString()));
-                } else {
-                    emitter.send(SseEmitter.event()
-                            .name("error")
-                            .data(result.toString()));
-                }
-                emitter.complete();
-            } catch (Exception e) {
-                log.error("ECharts error: {}", e.getMessage());
-                emitter.completeWithError(e);
-            }
-        }).start();
-
-        return emitter;
-    }
-
-    private SseEmitter handleAnalyze(String question, String userId) {
-        SseEmitter emitter = new SseEmitter(60000L);
-
-        new Thread(() -> {
-            try {
-                JSONObject result = agentClient.analyze(question, userId);
-                if (result.getInt("code", 500) == 200) {
-                    emitter.send(SseEmitter.event()
-                            .name("analyze")
-                            .data(result.toString()));
-                } else {
-                    emitter.send(SseEmitter.event()
-                            .name("error")
-                            .data(result.toString()));
-                }
-                emitter.complete();
-            } catch (Exception e) {
-                log.error("Analyze error: {}", e.getMessage());
-                emitter.completeWithError(e);
-            }
-        }).start();
-
+            });
+        } catch (TaskRejectedException ex) {
+            lifecycle.fail(AgentErrorCode.UNAVAILABLE, "Agent gateway is busy");
+        }
         return emitter;
     }
 
     @FunctionalInterface
     private interface AgentStreamCall {
-        void execute(java.util.function.Consumer<String> onEvent);
+        void execute(String question, String userId, java.util.function.Consumer<String> onEvent,
+                     AgentStreamCancellation cancellation);
+    }
+
+    private static final class StreamLifecycle {
+
+        private final SseEmitter emitter;
+        private final String agentType;
+        private final AtomicBoolean terminated = new AtomicBoolean(false);
+        private final AgentStreamCancellation cancellation = new AgentStreamCancellation();
+
+        private StreamLifecycle(SseEmitter emitter, String agentType) {
+            this.emitter = emitter;
+            this.agentType = agentType;
+        }
+
+        private AgentStreamCancellation cancellation() {
+            return cancellation;
+        }
+
+        private void registerCallbacks() {
+            emitter.onCompletion(() -> terminate("completed"));
+            emitter.onTimeout(() -> {
+                if (terminate("timeout")) {
+                    emitter.complete();
+                }
+            });
+            emitter.onError(error -> terminate("client_error"));
+        }
+
+        private void forwardEvent(String eventData) {
+            if (terminated.get()) {
+                throw new AgentStreamCancelledException();
+            }
+            JSONObject parsed;
+            try {
+                parsed = JSONUtil.parseObj(eventData);
+            } catch (Exception ex) {
+                throw new AgentClientException(AgentErrorCode.PROTOCOL_ERROR,
+                        "Agent returned malformed SSE data", ex);
+            }
+
+            if (parsed.getBool("error", false)) {
+                send("error", eventData);
+                complete();
+                throw new AgentStreamCancelledException();
+            }
+            if (parsed.getBool("done", false)) {
+                send("done", eventData);
+                complete();
+                throw new AgentStreamCancelledException();
+            }
+            if (parsed.containsKey("content")) {
+                Object content = parsed.get("content");
+                if (content instanceof JSONObject
+                        || (content instanceof String text && !text.isEmpty())) {
+                    send("text", eventData);
+                }
+            }
+        }
+
+        private void send(String eventName, String data) {
+            if (terminated.get()) {
+                throw new AgentStreamCancelledException();
+            }
+            try {
+                emitter.send(SseEmitter.event().name(eventName).data(data));
+            } catch (IOException | IllegalStateException ex) {
+                terminate("disconnected");
+                throw new AgentStreamCancelledException();
+            }
+        }
+
+        private void fail(AgentErrorCode errorCode, String message) {
+            if (!terminated.compareAndSet(false, true)) {
+                return;
+            }
+            cancellation.cancel();
+            JSONObject error = new JSONObject();
+            error.set("code", errorCode.name());
+            error.set("message", message);
+            try {
+                emitter.send(SseEmitter.event().name("error").data(error.toString()));
+            } catch (IOException | IllegalStateException ignored) {
+                // The client may already have disconnected.
+            } finally {
+                emitter.complete();
+            }
+        }
+
+        private void complete() {
+            if (terminated.compareAndSet(false, true)) {
+                cancellation.cancel();
+                emitter.complete();
+            }
+        }
+
+        private boolean terminate(String reason) {
+            if (terminated.compareAndSet(false, true)) {
+                log.debug("SSE lifecycle terminated, type={}, reason={}", agentType, reason);
+                cancellation.cancel();
+                return true;
+            }
+            return false;
+        }
     }
 }

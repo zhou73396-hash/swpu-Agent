@@ -4,5 +4,5 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 public interface ChatService {
 
-    SseEmitter sendMessage(String question, String userId);
+    SseEmitter sendMessage(String question, Long userId, String email);
 }

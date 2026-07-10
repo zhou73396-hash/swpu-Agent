@@ -31,3 +31,24 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Local environment and agent config ###
+.env
+.env.*
+.claude/
+.agents/
+/AGENTS.md
+
+### Runtime output ###
+*.log
+logs/
+uploads/
+*.pdf
+*.docx
+
+### Local user files and tools ###
+/%SystemDrive%/
+/artifacts/
+/dir/
+/tools/
+/认证闭环_MVP_设计与实施方案.md

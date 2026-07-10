@@ -1,9 +1,11 @@
 package com.swpuagent.controller;
 
 import com.swpuagent.dto.request.LoginRequest;
+import com.swpuagent.dto.request.LogoutRequest;
+import com.swpuagent.dto.request.RefreshTokenRequest;
 import com.swpuagent.dto.request.RegisterRequest;
 import com.swpuagent.dto.request.SendCodeRequest;
-import com.swpuagent.dto.response.LoginResponse;
+import com.swpuagent.dto.response.TokenPairResponse;
 import com.swpuagent.service.AuthService;
 import com.swpuagent.utils.Result;
 import jakarta.validation.Valid;
@@ -43,8 +45,18 @@ public class AuthController {
      * Public endpoint — returns JWT tokens.
      */
     @PostMapping("/login")
-    public Result<LoginResponse> login(@Valid @RequestBody LoginRequest request) {
+    public Result<TokenPairResponse> login(@Valid @RequestBody LoginRequest request) {
         return authService.login(request.getEmail(), request.getCode());
+    }
+
+    @PostMapping("/refresh")
+    public Result<TokenPairResponse> refresh(@Valid @RequestBody RefreshTokenRequest request) {
+        return authService.refresh(request.refreshToken());
+    }
+
+    @PostMapping("/logout")
+    public Result<Void> logout(@Valid @RequestBody LogoutRequest request) {
+        return authService.logout(request.refreshToken());
     }
 
     /**

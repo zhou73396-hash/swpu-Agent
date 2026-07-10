@@ -1,171 +1,188 @@
 # swpu-agent
 
-Spring Boot 3.5 + Java 17 智能 BI 对话后端，对接 Python LangChain AI Agent，实现自然语言数据查询与可视化。
+基于 Java 17、Spring Boot 3、MyBatis-Plus、MySQL、Redis 和 JWT 的 AI Agent 后端网关。Java 负责认证、参数校验和 SSE 转发，实际 AI 能力由独立的 Python Agent 服务提供。
 
-## 架构
+## 当前真实能力
 
+- 邮箱验证码发送、登录和注册。
+- JWT Access Token 与可轮换 Refresh Token 认证。
+- Refresh Token 哈希存储、单会话退出和多设备会话隔离。
+- SQL、文件、新闻和车票 Agent 的 SSE 转发。
+- ECharts 和数据分析 Agent 的 JSON 转发。
+- `.docx` 文件上传并转发给 Python Agent。
+- Agent HTTP、超时和协议错误映射。
+- SSE 完成、超时、断开和上游取消处理。
+
+尚未实现：验证码限流、数据库连接 CRUD、用户资料、Agent 调用审计和 OpenAPI 文档。
+
+## 运行架构
+
+```text
+Frontend
+   │ HTTP / SSE
+   ▼
+Java Gateway :8080
+   ├── MySQL :3307（容器内 3306）
+   ├── Redis :6379
+   └── Python Agent :8000（独立项目）
 ```
-浏览器 / 前端
-    │  SSE (Server-Sent Events)
-    ▼
-Java Backend (:8080)
-    │  RestClient          JWT · 会话管理 · SSE 中继
-    ▼
-Python Agent (:8000)
-    │  LangChain           qwen3-max LLM
-    ▼
-MySQL (agent) + Redis      共用单库
-```
 
-Java 和 Python 共用 `agent` 数据库。`user_info` 表由 Python 管理，Java 只读写不建表，适配其实际结构。
+Java 和 Python 共用 `agent.user_info`。新建数据库时，`sql/init.sql` 会创建兼容的基础表；如果接入已有 Python 数据库，脚本使用 `CREATE TABLE IF NOT EXISTS`，不会删除现有表或数据。
 
-## 快速开始
+## 前置要求
+
+- Docker Desktop，或本机 MySQL 8 和 Redis 7。
+- 如在宿主机运行 Java：JDK 17、Maven 3.9+。
+- Python Agent 需要单独运行在 8000 端口；没有 Python Agent 时，健康检查可以通过，但验证码邮件和 Chat 会返回 Agent 不可用。
+
+## 方式一：Docker 启动
+
+先在宿主机启动 Python Agent，然后执行：
 
 ```bash
-# 1. 基础设施
-docker-compose up -d                                # MySQL 8.0 + Redis 7
-
-# 2. 初始化数据库
-# 注意：user_info 如果是 MyISAM 引擎，需先转 InnoDB（MyISAM 不支持外键）
-mysql -u root -proot agent -e "ALTER TABLE user_info ENGINE=InnoDB"
-mysql -u root -proot < sql/init.sql                 # 建 Java 5 张表
-
-# 3. 启动 Python Agent（另见 agent-py/README.md）
-cd ../agent-py && python main.py                    # → :8000
-
-# 4. 启动 Java
-cd ../swpu-agent && mvn spring-boot:run             # → :8080
-
-# 5. 验证
+docker compose up --build -d
+docker compose ps
 curl http://localhost:8080/api/health
-# → {"code":200,"data":{"status":"UP","version":"1.0.0"}}
+```
+
+预期健康响应：
+
+```json
+{"code":200,"message":"success","data":{"status":"UP","service":"swpu-agent-gateway"}}
+```
+
+Compose 会启动：
+
+- `swpu-mysql`
+- `swpu-redis`
+- `swpu-gateway`
+
+Java 容器默认通过 `host.docker.internal:8000` 访问宿主机上的 Python Agent。Linux 环境可通过 `AGENT_BASE_URL` 显式指定可访问地址。
+
+查看日志：
+
+```bash
+docker compose logs -f gateway
+docker compose logs -f mysql
+```
+
+停止服务：
+
+```bash
+docker compose down
+```
+
+只有需要完全重建测试数据库时才执行以下命令，它会删除 MySQL 和 Redis 数据卷：
+
+```bash
+docker compose down -v
+```
+
+## 方式二：基础设施用 Docker，Java 在本机运行
+
+```bash
+docker compose up -d mysql redis
+```
+
+PowerShell：
+
+```powershell
+$env:JWT_SECRET_KEY="local-development-jwt-secret-key-change-me-2026"
+$env:AGENT_BASE_URL="http://localhost:8000"
+mvn spring-boot:run
+```
+
+Bash：
+
+```bash
+export JWT_SECRET_KEY="local-development-jwt-secret-key-change-me-2026"
+export AGENT_BASE_URL="http://localhost:8000"
+mvn spring-boot:run
 ```
 
 ## 环境变量
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `JWT_SECRET_KEY` | **必需** (≥32字符) | JWT 签名密钥，启动时校验 |
-| `DB_ENCRYPTION_KEY` | **必需** (≥16字符) | AES 数据库密码加密密钥 |
-| `DB_PASSWORD` | `root` | MySQL 密码 |
+| 变量 | 本机默认值 | 用途 |
+|---|---|---|
+| `JWT_SECRET_KEY` | 无，必须提供 | JWT HS256 签名密钥，至少 32 字节 |
+| `JWT_ACCESS_TOKEN_EXPIRATION` | `1800000` | Access Token 有效期，毫秒 |
+| `JWT_REFRESH_TOKEN_EXPIRATION` | `604800000` | Refresh Token 有效期，毫秒 |
+| `DB_URL` | `jdbc:mysql://localhost:3307/agent...` | Java 数据库连接 |
+| `MYSQL_PORT` | `3307` | Compose 暴露到宿主机的 MySQL 端口 |
+| `DB_USERNAME` | `zl` | MySQL 用户名 |
+| `DB_PASSWORD` | `123456` | MySQL 密码 |
 | `REDIS_HOST` | `localhost` | Redis 地址 |
-| `REDIS_PASSWORD` | (空) | Redis 密码 |
-| `AGENT_PYTHON_URL` | `http://localhost:8000` | Python Agent 地址 |
+| `REDIS_PORT` | `6379` | Redis 端口 |
+| `REDIS_PASSWORD` | 空 | Redis 密码 |
+| `AGENT_BASE_URL` | `http://localhost:8000` | Python Agent 地址 |
+| `AGENT_SSE_CORE_POOL_SIZE` | `4` | SSE 核心线程数 |
+| `AGENT_SSE_MAX_POOL_SIZE` | `16` | SSE 最大线程数 |
+| `AGENT_SSE_QUEUE_CAPACITY` | `100` | SSE 等待队列容量 |
+
+Compose 内部会自动把数据库和 Redis 地址替换为容器服务名。默认密码和 JWT 密钥只用于本地开发，部署前必须通过环境变量覆盖。
+
+## 已实现接口
+
+### 健康检查
+
+| 方法 | 路径 | 认证 |
+|---|---|---|
+| `GET` | `/api/health` | 否 |
+
+### 认证
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/auth/send_code` | 发送登录验证码 |
+| `POST` | `/api/auth/send_register_code` | 发送注册验证码 |
+| `POST` | `/api/auth/login` | 验证邮箱验证码并返回 Token |
+| `POST` | `/api/auth/register` | 注册到 `user_info` |
+| `POST` | `/api/auth/refresh` | 轮换 Refresh Token 并返回新 Token 对 |
+| `POST` | `/api/auth/logout` | 撤销当前 Refresh Token 会话 |
+
+### Chat
+
+以下接口需要 `Authorization: Bearer <accessToken>`：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/chat/send` | 返回 SSE Agent 响应 |
+| `POST` | `/api/chat/upload` | 上传并转发 `.docx` 文件 |
+
+Chat 请求：
+
+```json
+{"question":"查询本月销售额"}
+```
+
+SSE 事件包括 `text`、`chart`、`analyze`、`done` 和 `error`。
+
+## 数据库初始化
+
+`sql/init.sql` 按外键依赖顺序创建：
+
+1. `user_info`
+2. `chat_sessions`
+3. `chat_messages`
+4. `db_connections`
+5. `tool_invocations`
+
+已删除未被 Java 使用的重复 `users` 表和消息队列占位表。当前认证数据以 `user_info` 为唯一用户来源。
+
+MySQL 官方镜像只会在空数据卷首次启动时执行初始化脚本。修改 `init.sql` 不会自动修改已有数据卷。
+
+## 测试
 
 ```bash
-# 最小启动配置
-export JWT_SECRET_KEY="your-strong-key-at-least-32-characters-long!!"
-export DB_ENCRYPTION_KEY="your-16byte-key!!"
-mvn spring-boot:run
+mvn test
 ```
 
-## API 端点
+当前自动化测试覆盖应用上下文、Agent HTTP/JSON 错误、SSE 生命周期、登录、刷新、退出、Token 校验、用户上下文和并发刷新。
 
-### 公开接口
+## 当前身份模型说明
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/health` | 健康检查 |
-| `POST` | `/api/auth/send_code` | 发送登录验证码（纯 Java，0 LLM） |
-| `POST` | `/api/auth/send_register_code` | 发送注册验证码 |
-| `POST` | `/api/auth/login` | 登录 → `{accessToken, refreshToken}` |
-| `POST` | `/api/auth/register` | 注册 → `{accessToken, refreshToken}` |
-
-### Chat（需 JWT）
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/chat/sessions` | 会话列表 |
-| `POST` | `/api/chat/sessions` | 创建会话 |
-| `GET` | `/api/chat/sessions/{id}/messages` | 消息历史 |
-| `DELETE` | `/api/chat/sessions/{id}` | 删除会话 |
-| `POST` | `/api/chat/send` | **发消息（SSE 流式返回）** |
-
-### 数据库连接管理
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `GET` | `/api/db/connections` | 连接列表 |
-| `POST` | `/api/db/connections` | 新建连接 |
-| `PUT` | `/api/db/connections/{id}` | 更新连接 |
-| `DELETE` | `/api/db/connections/{id}` | 删除连接 |
-| `POST` | `/api/db/connections/{id}/test` | 测试连接 |
-| `GET` | `/api/db/connections/{id}/schema` | 查看库表结构 |
-
-### 其他
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/api/viz/generate` | 生成 ECharts 图表 |
-| `GET` | `/api/user/profile` | 用户信息 |
-| `PUT` | `/api/user/profile` | 更新用户信息 |
-
-## SSE 事件流
-
-`POST /api/chat/send` 返回 Server-Sent Events：
-
-```
-event:user_saved  → {"message_id":1}       用户消息已保存
-event:thinking    → 正在分析您的问题…        Agent 开始思考
-event:text        → 您好                     AI 回答片段（多次流式推送）
-event:chart       → {"option":{...}}         ECharts 图表（图表生成时）
-event:done        →                          流结束
-event:error       → 错误信息                 异常时
-```
-
-## 数据库
-
-### 表结构
-
-```
-agent（Java + Python 共用）
-├── user_info            用户 · 角色权限（Python 管理，Java 适配）
-├── users                JWT 登录账号
-├── chat_sessions        对话会话
-├── chat_messages        对话消息
-├── db_connections       外部数据库连接
-├── tool_invocations     Agent 工具调用日志
-├── customer / products / orders / customer_behavior / sales  业务数据
-```
-
-### 关键注意
-
-- `user_info` 必须为 **InnoDB** 引擎（默认 MyISAM 不支持外键，Java 的 `chat_sessions` 等表引用 `user_info(id)`）
-- Java 的 `UserInfoMapper` 已适配实际列：`id, user_name, email, role, password`
-- Java 不建 `user_info` 表，不修改其结构
-- `init.sql` 只建 Java 的 5 张表，不含 `user_info`
-
-## 项目结构
-
-```
-swpu-agent/
-├── sql/init.sql                     Java 5 表建表脚本
-├── docker-compose.yml               MySQL + Redis
-├── pom.xml                          Maven
-└── src/main/java/com/swpuagent/
-    ├── SwpuAgentApplication.java
-    ├── agent/
-    │   └── AgentClient.java             调用 Python /chat（SSE 中继）
-    ├── controller/
-    │   ├── AuthController.java          认证（纯 Java，0 LLM）
-    │   ├── ChatController.java          对话 SSE
-    │   ├── DbConnectionController.java
-    │   ├── VisualizationController.java
-    │   └── UserController.java
-    ├── service/
-    │   ├── AgentService.java            编排：查邮箱 → 调 Python
-    │   ├── AuthService.java             登录/注册逻辑
-    │   ├── ChatService.java
-    │   └── VerificationCodeService.java
-    ├── security/                        JWT 过滤器
-    ├── mapper/                          MyBatis
-    ├── entity/
-    └── common/                          异常处理
-```
-
-## 注意
-
-- **Auth 不走 LLM**：验证码 Java 生成存 Redis，零 AI 消耗
-- Python Agent 不可用时 Chat 报错，认证和会话管理照常工作
-- 生产环境请修改 `JWT_SECRET_KEY`，清理测试数据
-- Python Agent 需用 Python 3.12 环境运行（langgraph 兼容性）
+- Access Token：`sub=user_info.id`，并包含 `email`、`role` 和 `type=access`。
+- Refresh Token：`sub=user_info.id`，并包含唯一 `jti` 和 `type=refresh`。
+- Redis Key：`auth:refresh:{userId}:{jti}`，Value 只保存 Token 的 SHA-256 哈希。
+- Java 内部使用数值用户 ID；调用 Python Agent 时继续传递邮箱。
+- Refresh Token 每次刷新后轮换，旧 Token 无法再次使用。
