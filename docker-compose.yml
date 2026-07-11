@@ -38,6 +38,20 @@ services:
       timeout: 5s
       retries: 10
 
+  mock-agent:
+    build:
+      context: ./mock-agent
+    container_name: swpu-mock-agent
+    restart: unless-stopped
+    ports:
+      - "${MOCK_AGENT_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   gateway:
     build:
       context: .
@@ -54,7 +68,7 @@ services:
       REDIS_PORT: 6379
       APP_VERSION: auth-v2
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-local-development-jwt-secret-key-change-me-2026}
-      AGENT_BASE_URL: ${AGENT_BASE_URL:-http://host.docker.internal:8000}
+      AGENT_BASE_URL: ${AGENT_BASE_URL:-http://mock-agent:8000}
       AGENT_CONNECT_TIMEOUT_MS: ${AGENT_CONNECT_TIMEOUT_MS:-10000}
       AGENT_READ_TIMEOUT_MS: ${AGENT_READ_TIMEOUT_MS:-120000}
       AGENT_SSE_STREAM_TIMEOUT_MS: ${AGENT_SSE_STREAM_TIMEOUT_MS:-120000}
@@ -63,6 +77,8 @@ services:
       mysql:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      mock-agent:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/api/health"]

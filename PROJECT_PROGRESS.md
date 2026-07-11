@@ -4,22 +4,49 @@ Last updated: 2026-07-11
 
 ## Current Stage
 
-Stage 4 is in progress: Chat and SSE regression after the authentication changes.
+Stage 5 completed: Mock Agent, SSE regression, and project documentation update.
 
 ## Completed
 
-- AgentClient supports JSON, SSE, file upload, HTTP status validation, error classification, and upstream cancellation.
-- Chat SSE uses a bounded executor and handles completion, rejection, disconnect, upstream errors, and cancellation.
-- Access Token and rotating Refresh Token authentication is complete.
-- Refresh sessions use SHA-256 hashes in Redis and atomic Lua rotation.
-- Login, refresh, logout, token rejection, and real Redis concurrency were verified end to end.
-- Gateway image was rebuilt and deployed as `auth-v2`.
-- Gateway, MySQL, Redis, and Python Agent health checks pass.
-- Authentication errors use real HTTP statuses and a unified error body.
+### Authentication Closed Loop (Stage 1-3)
+- Access Token with numeric `sub=userId`, `email`, `role`, `type=access`.
+- Refresh Token with numeric `sub=userId`, unique `jti`, `type=refresh`.
+- Redis stores only Refresh Token SHA-256 hash, Key `auth:refresh:{userId}:{jti}`, TTL 7 days.
+- Redis Lua atomic compare-delete-replace for single-consumption rotation.
+- Real Redis concurrency: one success, one 401.
+- Login, refresh, logout endpoints with real HTTP statuses and unified error body.
+- `UserContext` + `UserContextHolder` with `finally` cleanup in `JwtAuthFilter`.
+- Java uses numeric userId internally; Python Agent receives email.
 - 30 automated Java tests pass.
-- SSE stream and JSON timeout values are configurable.
-- SSE timeout now emits `READ_TIMEOUT` and cancels the upstream connection.
-- README states that Train Agent HTTP 501 is outside the current acceptance scope.
+
+### Gateway Runtime & SSE Safeguards (Stage 4)
+- Version label `auth-v2` in health check and startup log.
+- `GlobalExceptionHandler` returns unified `ApiErrorResponse` for auth, validation, agent, and runtime errors.
+- `AsyncRequestNotUsableException` and `AsyncRequestTimeoutException` handled silently.
+- SSE timeout configurable via `AGENT_SSE_STREAM_TIMEOUT_MS` / `AGENT_SSE_JSON_TIMEOUT_MS`.
+- Proactive `TaskScheduler`-based timeout: sends `READ_TIMEOUT` SSE error, completes emitter, then cancels upstream.
+- Container timeout extended +5s beyond active timeout to prevent Tomcat/Scheduler race.
+- Agent connect/read timeout configurable via `AGENT_CONNECT_TIMEOUT_MS` / `AGENT_READ_TIMEOUT_MS`.
+
+### Mock Agent & SSE Regression (Stage 5)
+- Standalone `mock-agent/` with FastAPI, no LLM or API Key dependency.
+- Standard routes: `GET /health`, `POST /api/chat`, `POST /api/chat/stream`.
+- Java contract routes: all `/agent/*` paths and `/upload`.
+- Five modes: `normal`, `slow`, `http500`, `malformed`, `disconnect` (via `mode` param or question text).
+- Docker Compose adds `mock-agent` service; Gateway defaults to `AGENT_BASE_URL=http://mock-agent:8000`.
+- No dependency on LAN IPs, external API keys, or other members' `.env`.
+
+#### Verified Acceptance Results
+
+| Scenario | Method | Result |
+|----------|--------|--------|
+| Normal JSON | Gateway POST → Mock `/api/chat` | HTTP 200, email passed correctly |
+| Normal SSE | Gateway POST `question=hello` | 3 segments: `text`, `text`, `done` |
+| HTTP 500 | Gateway POST `question=http500` | SSE `event:error` with `HTTP_ERROR` |
+| Malformed | Gateway POST `question=malformed` | SSE `event:error` with `PROTOCOL_ERROR` |
+| Disconnect | Gateway POST `question=disconnect` | SSE `event:error` with `UNAVAILABLE` |
+| Timeout | Gateway POST `question=slow` (1s timeout) | SSE `event:error` with `READ_TIMEOUT` at 1.06s |
+| Client disconnect | Client closes stream mid-request | Mock Agent `Gateway SSE closed`, no unhandled Gateway error |
 
 ## Verified Authentication Results
 
@@ -34,23 +61,21 @@ Stage 4 is in progress: Chat and SSE regression after the authentication changes
 
 ## Known Gaps
 
-- Role-based authorization is not implemented, so a real HTTP 403 scenario is not available.
-- Train Agent returns HTTP 501 because its Python implementation is not available.
-- DB connection CRUD, user profile, verification-code rate limiting, and OpenAPI are not implemented.
-- Some legacy MyBatis entities log warnings because they do not define `@TableId`.
+- Role-based authorization is not implemented (no real HTTP 403 scenario).
+- Train Agent returns HTTP 501 (Python implementation not available).
+- DB connection CRUD, user profile, verification-code rate limiting, and OpenAPI not implemented.
+- Some legacy MyBatis entities log `@TableId` warnings.
 
 ## Git And Runtime
 
 - Branch: `feature/auth-closed-loop`
-- Recovery commit: `5647964 feat: complete authentication closed loop`
-- Runtime version: `auth-v2`
-- Gateway, MySQL, and Redis containers are healthy.
-- Python Agent is currently stopped.
-- The latest Stage 4 Gateway image is built but has not replaced the running container yet.
-- Stage 2-4 follow-up changes are tracked on this branch.
+- Commit 1: `5647964 feat: complete authentication closed loop` (auth MVP, 45 files)
+- Commit 2: `1759ab2 feat: add gateway runtime and SSE safeguards` (version ID, unified errors, SSE config, 11 files)
+- Current runtime: `auth-v2`, all containers healthy
+- Stage 5 Mock Agent / README changes not yet committed
 
 ## Next Work
 
-- Start Python Agent and deploy the latest Gateway image.
-- Finish normal, disconnect, timeout, and Python-error SSE regression.
-- Record the final Stage 4 evidence here.
+- Generate revised resume DOCX/PDF (remove Python Agent from tech stack, add Mock Agent).
+- Commit Stage 5 changes (Mock Agent, README, SSE fixes).
+- Optional: role-based authorization, DB CRUD, verification-code rate limiting.

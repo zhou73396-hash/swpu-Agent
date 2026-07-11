@@ -14,11 +14,14 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.core.task.TaskRejectedException;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.Locale;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Slf4j
@@ -30,6 +33,9 @@ public class ChatServiceImpl implements ChatService {
 
     @Qualifier("sseExecutor")
     private final TaskExecutor sseExecutor;
+
+    @Qualifier("sseTimeoutScheduler")
+    private final TaskScheduler sseTimeoutScheduler;
 
     @Value("${agent.sse.stream-timeout-ms:120000}")
     private long streamTimeoutMs = 120000L;
@@ -61,9 +67,10 @@ public class ChatServiceImpl implements ChatService {
     }
 
     private SseEmitter handleStreaming(String question, String userId, String agentType) {
-        SseEmitter emitter = new SseEmitter(streamTimeoutMs);
-        StreamLifecycle lifecycle = new StreamLifecycle(emitter, agentType);
+        SseEmitter emitter = new SseEmitter(streamTimeoutMs + 5000L);
+        StreamLifecycle lifecycle = new StreamLifecycle(emitter, agentType, sseTimeoutScheduler, streamTimeoutMs);
         lifecycle.registerCallbacks();
+        lifecycle.scheduleTimeout();
 
         try {
             sseExecutor.execute(() -> {
@@ -92,9 +99,10 @@ public class ChatServiceImpl implements ChatService {
     }
 
     private SseEmitter handleJsonAgent(String question, String userId, String eventName) {
-        SseEmitter emitter = new SseEmitter(jsonTimeoutMs);
-        StreamLifecycle lifecycle = new StreamLifecycle(emitter, eventName);
+        SseEmitter emitter = new SseEmitter(jsonTimeoutMs + 5000L);
+        StreamLifecycle lifecycle = new StreamLifecycle(emitter, eventName, sseTimeoutScheduler, jsonTimeoutMs);
         lifecycle.registerCallbacks();
+        lifecycle.scheduleTimeout();
 
         try {
             sseExecutor.execute(() -> {
@@ -131,12 +139,18 @@ public class ChatServiceImpl implements ChatService {
 
         private final SseEmitter emitter;
         private final String agentType;
+        private final TaskScheduler timeoutScheduler;
+        private final long timeoutMs;
         private final AtomicBoolean terminated = new AtomicBoolean(false);
         private final AgentStreamCancellation cancellation = new AgentStreamCancellation();
+        private volatile ScheduledFuture<?> timeoutFuture;
 
-        private StreamLifecycle(SseEmitter emitter, String agentType) {
+        private StreamLifecycle(SseEmitter emitter, String agentType,
+                                TaskScheduler timeoutScheduler, long timeoutMs) {
             this.emitter = emitter;
             this.agentType = agentType;
+            this.timeoutScheduler = timeoutScheduler;
+            this.timeoutMs = timeoutMs;
         }
 
         private AgentStreamCancellation cancellation() {
@@ -147,6 +161,13 @@ public class ChatServiceImpl implements ChatService {
             emitter.onCompletion(() -> terminate("completed"));
             emitter.onTimeout(() -> fail(AgentErrorCode.READ_TIMEOUT, "Agent stream timed out"));
             emitter.onError(error -> terminate("client_error"));
+        }
+
+        private void scheduleTimeout() {
+            timeoutFuture = timeoutScheduler.schedule(
+                    () -> fail(AgentErrorCode.READ_TIMEOUT, "Agent stream timed out"),
+                    Instant.now().plusMillis(timeoutMs)
+            );
         }
 
         private void forwardEvent(String eventData) {
@@ -196,7 +217,7 @@ public class ChatServiceImpl implements ChatService {
             if (!terminated.compareAndSet(false, true)) {
                 return;
             }
-            cancellation.cancel();
+            cancelTimeout();
             JSONObject error = new JSONObject();
             error.set("code", errorCode.name());
             error.set("message", message);
@@ -205,12 +226,18 @@ public class ChatServiceImpl implements ChatService {
             } catch (IOException | IllegalStateException ignored) {
                 // The client may already have disconnected.
             } finally {
-                emitter.complete();
+                try {
+                    emitter.complete();
+                } catch (IllegalStateException ignored) {
+                    // The async response may already be closed.
+                }
+                cancellation.cancel();
             }
         }
 
         private void complete() {
             if (terminated.compareAndSet(false, true)) {
+                cancelTimeout();
                 cancellation.cancel();
                 emitter.complete();
             }
@@ -219,10 +246,18 @@ public class ChatServiceImpl implements ChatService {
         private boolean terminate(String reason) {
             if (terminated.compareAndSet(false, true)) {
                 log.debug("SSE lifecycle terminated, type={}, reason={}", agentType, reason);
+                cancelTimeout();
                 cancellation.cancel();
                 return true;
             }
             return false;
+        }
+
+        private void cancelTimeout() {
+            ScheduledFuture<?> future = timeoutFuture;
+            if (future != null) {
+                future.cancel(false);
+            }
         }
     }
 }
