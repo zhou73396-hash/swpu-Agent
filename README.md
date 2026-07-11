@@ -13,6 +13,8 @@
 - Agent HTTP、超时和协议错误映射。
 - SSE 完成、超时、断开和上游取消处理。
 
+Train Agent 接口当前由 Python 服务返回 HTTP 501，功能尚未实现，不属于当前 Chat/SSE 回归验收范围。
+
 尚未实现：验证码限流、数据库连接 CRUD、用户资料、Agent 调用审计和 OpenAPI 文档。
 
 ## 运行架构

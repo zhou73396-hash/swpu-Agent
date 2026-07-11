@@ -11,11 +11,12 @@ class HealthControllerTest {
 
     @Test
     void healthShouldExposeGatewayStatusWithoutExternalDependencies() {
-        Result<Map<String, String>> result = new HealthController().health();
+        Result<Map<String, String>> result = new HealthController("auth-v2").health();
 
         assertThat(result.getCode()).isEqualTo(200);
         assertThat(result.getData())
                 .containsEntry("status", "UP")
-                .containsEntry("service", "swpu-agent-gateway");
+                .containsEntry("service", "swpu-agent-gateway")
+                .containsEntry("version", "auth-v2");
     }
 }

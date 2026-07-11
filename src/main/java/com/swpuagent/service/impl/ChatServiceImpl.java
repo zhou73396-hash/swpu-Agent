@@ -11,6 +11,7 @@ import com.swpuagent.service.ChatService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.core.task.TaskRejectedException;
 import org.springframework.stereotype.Service;
@@ -29,6 +30,12 @@ public class ChatServiceImpl implements ChatService {
 
     @Qualifier("sseExecutor")
     private final TaskExecutor sseExecutor;
+
+    @Value("${agent.sse.stream-timeout-ms:120000}")
+    private long streamTimeoutMs = 120000L;
+
+    @Value("${agent.sse.json-timeout-ms:60000}")
+    private long jsonTimeoutMs = 60000L;
 
     @Override
     public SseEmitter sendMessage(String question, Long userId, String email) {
@@ -54,7 +61,7 @@ public class ChatServiceImpl implements ChatService {
     }
 
     private SseEmitter handleStreaming(String question, String userId, String agentType) {
-        SseEmitter emitter = new SseEmitter(120000L);
+        SseEmitter emitter = new SseEmitter(streamTimeoutMs);
         StreamLifecycle lifecycle = new StreamLifecycle(emitter, agentType);
         lifecycle.registerCallbacks();
 
@@ -85,7 +92,7 @@ public class ChatServiceImpl implements ChatService {
     }
 
     private SseEmitter handleJsonAgent(String question, String userId, String eventName) {
-        SseEmitter emitter = new SseEmitter(60000L);
+        SseEmitter emitter = new SseEmitter(jsonTimeoutMs);
         StreamLifecycle lifecycle = new StreamLifecycle(emitter, eventName);
         lifecycle.registerCallbacks();
 
@@ -138,11 +145,7 @@ public class ChatServiceImpl implements ChatService {
 
         private void registerCallbacks() {
             emitter.onCompletion(() -> terminate("completed"));
-            emitter.onTimeout(() -> {
-                if (terminate("timeout")) {
-                    emitter.complete();
-                }
-            });
+            emitter.onTimeout(() -> fail(AgentErrorCode.READ_TIMEOUT, "Agent stream timed out"));
             emitter.onError(error -> terminate("client_error"));
         }
 

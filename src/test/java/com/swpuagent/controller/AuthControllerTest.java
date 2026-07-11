@@ -50,4 +50,23 @@ class AuthControllerTest {
                 .andExpect(jsonPath("$.code").value("REQUEST_BODY_INVALID"))
                 .andExpect(jsonPath("$.timestamp").exists());
     }
+
+    @Test
+    void unexpectedAuthenticationFailureShouldReturnUnifiedHttp500() throws Exception {
+        AuthService authService = mock(AuthService.class);
+        when(authService.login("user@example.com", "1234"))
+                .thenThrow(new RuntimeException("Redis command timed out"));
+        MockMvc mockMvc = MockMvcBuilders
+                .standaloneSetup(new AuthController(authService))
+                .setControllerAdvice(new GlobalExceptionHandler())
+                .build();
+
+        mockMvc.perform(post("/api/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"user@example.com\",\"code\":\"1234\"}"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value("INTERNAL_SERVER_ERROR"))
+                .andExpect(jsonPath("$.message").value("Internal server error"))
+                .andExpect(jsonPath("$.timestamp").exists());
+    }
 }

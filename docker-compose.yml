@@ -52,8 +52,13 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-123456}
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      APP_VERSION: auth-v2
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-local-development-jwt-secret-key-change-me-2026}
       AGENT_BASE_URL: ${AGENT_BASE_URL:-http://host.docker.internal:8000}
+      AGENT_CONNECT_TIMEOUT_MS: ${AGENT_CONNECT_TIMEOUT_MS:-10000}
+      AGENT_READ_TIMEOUT_MS: ${AGENT_READ_TIMEOUT_MS:-120000}
+      AGENT_SSE_STREAM_TIMEOUT_MS: ${AGENT_SSE_STREAM_TIMEOUT_MS:-120000}
+      AGENT_SSE_JSON_TIMEOUT_MS: ${AGENT_SSE_JSON_TIMEOUT_MS:-60000}
     depends_on:
       mysql:
         condition: service_healthy

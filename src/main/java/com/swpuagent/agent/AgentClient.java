@@ -37,6 +37,12 @@ public class AgentClient {
     @Value("${agent.base-url:http://192.168.158.56:8000}")
     private String baseUrl;
 
+    @Value("${agent.connect-timeout-ms:10000}")
+    private int connectTimeoutMs = 10000;
+
+    @Value("${agent.read-timeout-ms:120000}")
+    private int readTimeoutMs = 120000;
+
     public JSONObject systemChat(String message,String email) {
         String url = baseUrl + "/agent/system/chat";
         JSONObject body = new JSONObject();
@@ -159,8 +165,8 @@ public class AgentClient {
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setRequestProperty("Accept", "text/event-stream");
             conn.setDoOutput(true);
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(120000);
+            conn.setConnectTimeout(connectTimeoutMs);
+            conn.setReadTimeout(readTimeoutMs);
 
             byte[] input = body.toString().getBytes(StandardCharsets.UTF_8);
             conn.getOutputStream().write(input);
@@ -206,8 +212,8 @@ public class AgentClient {
 
     private SimpleClientHttpRequestFactory createRequestFactory() {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(10000);
-        factory.setReadTimeout(60000);
+        factory.setConnectTimeout(connectTimeoutMs);
+        factory.setReadTimeout(readTimeoutMs);
         return factory;
     }
 
