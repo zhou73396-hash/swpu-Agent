@@ -1,0 +1,54 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+
+### Local environment and agent config ###
+.env
+.env.*
+.claude/
+.agents/
+/AGENTS.md
+
+### Runtime output ###
+*.log
+logs/
+uploads/
+*.pdf
+*.docx
+
+### Local user files and tools ###
+/%SystemDrive%/
+/artifacts/
+/dir/
+/tools/
+/认证闭环_MVP_设计与实施方案.md

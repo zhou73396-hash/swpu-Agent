@@ -1,0 +1,9 @@
+target
+.git
+.idea
+.claude
+.agents
+artifacts
+tools
+*.pdf
+*.docx

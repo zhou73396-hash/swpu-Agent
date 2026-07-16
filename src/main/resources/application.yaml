@@ -1,0 +1,54 @@
+app:
+  version: ${APP_VERSION:auth-v2}
+
+server:
+  port: 8080
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${DB_URL:jdbc:mysql://localhost:3307/agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${DB_USERNAME:zl}
+    password: ${DB_PASSWORD:123456}
+
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      keepalive-time: 300000
+      connection-timeout: 30000
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 20MB
+
+jwt:
+  secret-key: ${JWT_SECRET_KEY}
+  access-token-expiration: ${JWT_ACCESS_TOKEN_EXPIRATION:1800000}
+  refresh-token-expiration: ${JWT_REFRESH_TOKEN_EXPIRATION:604800000}
+
+agent:
+  base-url: ${AGENT_BASE_URL:http://localhost:8000}
+  connect-timeout-ms: ${AGENT_CONNECT_TIMEOUT_MS:10000}
+  read-timeout-ms: ${AGENT_READ_TIMEOUT_MS:120000}
+  sse:
+    core-pool-size: ${AGENT_SSE_CORE_POOL_SIZE:4}
+    max-pool-size: ${AGENT_SSE_MAX_POOL_SIZE:16}
+    queue-capacity: ${AGENT_SSE_QUEUE_CAPACITY:100}
+    stream-timeout-ms: ${AGENT_SSE_STREAM_TIMEOUT_MS:120000}
+    json-timeout-ms: ${AGENT_SSE_JSON_TIMEOUT_MS:60000}
+
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
