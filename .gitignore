@@ -35,6 +35,7 @@ build/
 ### Local environment and agent config ###
 .env
 .env.*
+!.env.example
 .claude/
 .agents/
 /AGENTS.md

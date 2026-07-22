@@ -34,7 +34,7 @@ import java.util.function.Consumer;
 @Component
 public class AgentClient {
 
-    @Value("${agent.base-url:http://192.168.158.56:8000}")
+    @Value("${agent.base-url:http://localhost:8000}")
     private String baseUrl;
 
     @Value("${agent.connect-timeout-ms:10000}")

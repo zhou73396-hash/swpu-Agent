@@ -146,7 +146,7 @@ Examples:
   feat: add chat keyword routing to Python agent
   fix: resolve JWT expiration edge case
   docs: update API reference with new endpoints
-  config: update Redis host to 192.168.158.56
+  config: update Redis host through REDIS_HOST
 ```
 
 ---

@@ -16,7 +16,7 @@ docker-compose up -d                                                    # MySQL 
 mysql -u root -proot agent -e "ALTER TABLE user_info ENGINE=InnoDB"    # required for FK support
 ```
 
-Default credentials: MySQL `zl/123456` at `192.168.158.56:3306`, Redis at `192.168.158.56:6379` (no password). All config in `application.yaml` (no profile files).
+Default credentials: MySQL `zl/123456` at `localhost:3307`, Redis at `localhost:6379` (no password). All config in `application.yaml` (no profile files).
 
 **Python Agent** (`agent-py/`, port 8000, Python 3.12) is required for Chat and Auth email delivery. Without it, both Auth and Chat error.
 
@@ -87,7 +87,7 @@ MyBatis Plus entities (7): `UserInfo`, `Customer`, `CustomerBehavior`, `Orders`,
 
 ## Python Agent Integration
 
-`AgentClient` (Hutool HTTP) → Python FastAPI at `agent.base-url` (default `http://192.168.158.56:8000`).
+`AgentClient` (Hutool HTTP) → Python FastAPI at `agent.base-url` (default `http://localhost:8000`).
 
 | Java Method | Python Endpoint | Type |
 |-------------|----------------|------|
@@ -135,3 +135,114 @@ Python SSE format: `data:{"content":{"text":"...","done":false},"done":false}` �
 - No Spring profile files — single `application.yaml`
 - SSE via Spring `SseEmitter` (120s timeout streaming, 60s for JSON agents)
 - `@EnableScheduling` on main class (placeholder, no scheduled tasks yet)
+
+# Java 后端项目协作规范
+
+## 我的身份
+
+我是准备寻找 Java 后端实习的学生。
+
+当前目标：
+- 理解现有项目代码
+- 完善项目功能
+- 提升 Java 后端开发能力
+- 准备用于实习面试
+
+## 你的工作方式
+
+你作为我的 Java 后端开发助手。
+
+不要只生成代码，需要帮助我理解代码。
+
+每次开发任务：
+
+第一步：
+分析当前代码结构。
+
+第二步：
+说明实现方案。
+
+第三步：
+列出涉及文件。
+
+第四步：
+等待我确认后再进行大规模修改。
+
+不要：
+- 直接重构整个项目
+- 一次生成大量无法理解的代码
+- 跳过设计分析
+
+## 技术栈
+
+当前项目：
+
+- Java 17
+- Spring Boot 3
+- MyBatis-Plus
+- MySQL
+- Redis
+- JWT
+- SSE
+- Python Agent
+
+## 项目架构
+
+遵循：
+
+Controller
+↓
+Service
+↓
+Mapper
+↓
+Database
+
+并保持：
+
+Controller负责请求处理
+
+Service负责业务逻辑
+
+Mapper负责数据库访问
+
+## 代码解释要求
+
+每次生成代码时，需要解释：
+
+1. 这个类的作用
+2. 为什么这样设计
+3. 每个方法负责什么
+4. 调用流程是什么
+5. 涉及哪些 Spring Boot 知识点
+
+## 修改代码原则
+
+修改前：
+
+先告诉我：
+
+- 修改原因
+- 修改方案
+- 修改文件列表
+- 可能影响
+
+## 当前项目目标
+
+这个项目是：
+
+Java 后端网关 + Python Agent系统。
+
+目标：
+
+完善项目工程能力。
+
+重点提升：
+
+- 用户认证
+- JWT
+- Redis
+- MyBatis-Plus
+- 异常处理
+- 文件上传
+- Agent调用

@@ -418,7 +418,7 @@ file: document.docx (multipart form field, .docx only)
 | Parameter | Value | Description |
 |-----------|-------|-------------|
 | Algorithm | HS256 | HMAC with SHA-256 |
-| Secret Key | `swpu-agent-jwt-secret-key-2026-i-always-like-xyhc` | Configurable via `jwt.secret-key` |
+| Secret Key | No default; supplied through `JWT_SECRET_KEY` | Configurable via `jwt.secret-key` |
 | Access Token TTL | 30 minutes | Configurable via `jwt.access-token-expiration` |
 | Refresh Token TTL | 7 days | Configurable via `jwt.refresh-token-expiration` |
 | Refresh Token Format | 128-char hex | Non-JWT opaque token via `SecureRandom` |
@@ -509,7 +509,7 @@ Each `IService<Entity>` / `ServiceImpl` adds: `save`, `saveBatch`, `removeById`,
 
 | Setting | Default | Config Key |
 |---------|---------|------------|
-| Base URL | `http://192.168.158.56:8000` | `agent.base-url` |
+| Base URL | `http://localhost:8000` | `agent.base-url` |
 
 ### 7.2 Python Endpoints Called by Java
 
@@ -661,12 +661,12 @@ server:
 spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://192.168.158.56:3306/agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
+    url: jdbc:mysql://localhost:3307/agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai
     username: zl
     password: 123456
   data:
     redis:
-      host: 192.168.158.56
+      host: localhost
       port: 6379
   servlet:
     multipart:
@@ -674,12 +674,12 @@ spring:
       max-request-size: 20MB
 
 jwt:
-  secret-key: swpu-agent-jwt-secret-key-2026-i-always-like-xyhc
+  secret-key: ${JWT_SECRET_KEY}  # required; use a random value of at least 32 bytes
   access-token-expiration: 1800000     # 30 min
   refresh-token-expiration: 604800000  # 7 days
 
 agent:
-  base-url: http://192.168.158.56:8000
+  base-url: http://localhost:8000
 
 mybatis-plus:
   mapper-locations: classpath*:mapper/**/*.xml

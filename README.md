@@ -1,5 +1,59 @@
 # swpu-agent
 
+面向外部 AI Agent 服务的 Java 后端接入网关。项目基于 Java 17、Spring Boot 3、MyBatis-Plus、MySQL、Redis 与 JWT，重点解决身份认证、HTTP/SSE 请求转发、上游异常治理和本地可复现联调。
+
+> 本仓库主要维护 Java Gateway；真实 Python Agent 由团队其他成员开发。仓库内提供不依赖大模型或 API Key 的 Mock Agent，用于独立运行与回归验证。
+
+## 核心亮点
+
+- 设计 Access/Refresh 双 Token 认证，以数值 `user_info.id` 作为 Java 内部身份。
+- Refresh Token 仅以 SHA-256 摘要写入 Redis，并通过 Lua 原子完成校验、单次消费与轮换。
+- 统一映射上游 HTTP 状态、协议异常、服务不可用与读取超时。
+- 使用有界线程池、`TaskScheduler` 和 `SseEmitter` 回调治理流式任务的完成、超时、断开与取消。
+- 使用 Docker Compose 编排 Gateway、Mock Agent、MySQL 和 Redis；当前 30 项 Java 自动化测试全部通过。
+
+## 系统架构
+
+```mermaid
+flowchart LR
+    Client["Web / API Client"] -->|"HTTP / SSE"| Gateway["Java Gateway :8080"]
+    Gateway --> MySQL["MySQL :3306"]
+    Gateway --> Redis["Redis :6379"]
+    Gateway -->|"HTTP / SSE"| Agent["Mock Agent / External Python Agent :8000"]
+    Agent --> Gateway
+    Gateway --> Client
+```
+
+## Refresh Token 原子轮换
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant G as Java Gateway
+    participant R as Redis
+
+    C->>G: POST /api/auth/refresh
+    G->>G: 校验 JWT、type、sub 与 jti
+    G->>G: 计算旧 Token 的 SHA-256
+    G->>R: Lua 校验旧摘要并原子轮换
+    alt 旧 Token 有效
+        R-->>G: 删除旧会话并写入新摘要
+        G-->>C: 返回新的 Access/Refresh Token
+    else Token 已消费或无效
+        R-->>G: 轮换失败
+        G-->>C: HTTP 401
+    end
+```
+
+## 自动化验证
+
+```text
+Tests run: 30, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
+
+详细覆盖范围见 [`TEST_REPORT.md`](TEST_REPORT.md)。
+
 基于 Java 17、Spring Boot 3、MyBatis-Plus、MySQL、Redis 和 JWT 的 Java AI Agent 后端网关，重点解决外部长耗时服务的稳定、安全接入。
 
 ## 项目职责边界
@@ -102,7 +156,7 @@ docker compose up -d mysql redis
 PowerShell：
 
 ```powershell
-$env:JWT_SECRET_KEY="local-development-jwt-secret-key-change-me-2026"
+$env:JWT_SECRET_KEY=[Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
 $env:AGENT_BASE_URL="http://localhost:8000"
 mvn spring-boot:run
 ```
@@ -110,7 +164,7 @@ mvn spring-boot:run
 Bash：
 
 ```bash
-export JWT_SECRET_KEY="local-development-jwt-secret-key-change-me-2026"
+export JWT_SECRET_KEY="$(openssl rand -base64 48)"
 export AGENT_BASE_URL="http://localhost:8000"
 mvn spring-boot:run
 ```
