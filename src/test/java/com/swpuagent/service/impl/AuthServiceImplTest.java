@@ -8,6 +8,7 @@ import com.swpuagent.entity.UserInfo;
 import com.swpuagent.security.JwtUtil;
 import com.swpuagent.service.RedisService;
 import com.swpuagent.service.UserInfoService;
+import com.swpuagent.service.VerificationCodeConsumeResult;
 import com.swpuagent.service.auth.RefreshTokenStore;
 import com.swpuagent.utils.Result;
 import io.jsonwebtoken.Claims;
@@ -67,7 +68,8 @@ class AuthServiceImplTest {
     @Test
     void loginShouldIssueTokenPairAndStoreRefreshSession() {
         UserInfo user = user(42L, "user@example.com", "manager");
-        when(redisService.getCode("login:code", user.getEmail())).thenReturn("1234");
+        when(redisService.consumeCode("login:code", user.getEmail(), "1234"))
+                .thenReturn(VerificationCodeConsumeResult.SUCCESS);
         when(userInfoService.getOne(any())).thenReturn(user);
         when(jwtUtil.generateAccessToken(42L, user.getEmail(), "manager")).thenReturn("access-token");
         when(jwtUtil.generateRefreshToken(eq(42L), anyString())).thenReturn("refresh-token");
@@ -80,29 +82,44 @@ class AuthServiceImplTest {
         assertThat(result.getData().accessToken()).isEqualTo("access-token");
         assertThat(result.getData().refreshTokenExpiresIn()).isEqualTo(604800L);
         verify(refreshTokenStore).save(eq(42L), anyString(), eq("refresh-token"), eq(604800L));
-        verify(redisService).deleteCode("login:code", user.getEmail());
+        verify(redisService).consumeCode("login:code", user.getEmail(), "1234");
     }
 
     @Test
-    void loginShouldRejectUnknownUserWithoutConsumingCode() {
-        when(redisService.getCode("login:code", "missing@example.com")).thenReturn("1234");
+    void loginShouldRejectUnknownUserAfterConsumingCode() {
+        when(redisService.consumeCode("login:code", "missing@example.com", "1234"))
+                .thenReturn(VerificationCodeConsumeResult.SUCCESS);
         when(userInfoService.getOne(any())).thenReturn(null);
 
         assertThatThrownBy(() -> authService.login("missing@example.com", "1234"))
                 .isInstanceOf(AuthException.class)
                 .extracting(ex -> ((AuthException) ex).getErrorCode())
                 .isEqualTo(AuthErrorCode.AUTH_USER_NOT_FOUND);
-        verify(redisService, never()).deleteCode(any(), any());
+        verify(redisService).consumeCode("login:code", "missing@example.com", "1234");
     }
 
     @Test
     void loginShouldRejectInvalidVerificationCode() {
-        when(redisService.getCode("login:code", "user@example.com")).thenReturn("1234");
+        when(redisService.consumeCode("login:code", "user@example.com", "9999"))
+                .thenReturn(VerificationCodeConsumeResult.INVALID);
 
         assertThatThrownBy(() -> authService.login("user@example.com", "9999"))
                 .isInstanceOf(AuthException.class)
                 .extracting(ex -> ((AuthException) ex).getErrorCode())
                 .isEqualTo(AuthErrorCode.AUTH_VERIFICATION_CODE_INVALID);
+        verify(userInfoService, never()).getOne(any());
+    }
+
+    @Test
+    void loginShouldRejectExpiredVerificationCode() {
+        when(redisService.consumeCode("login:code", "user@example.com", "1234"))
+                .thenReturn(VerificationCodeConsumeResult.EXPIRED);
+
+        assertThatThrownBy(() -> authService.login("user@example.com", "1234"))
+                .isInstanceOf(AuthException.class)
+                .extracting(ex -> ((AuthException) ex).getErrorCode())
+                .isEqualTo(AuthErrorCode.AUTH_VERIFICATION_CODE_EXPIRED);
+        verify(userInfoService, never()).getOne(any());
     }
 
     @Test
@@ -223,7 +240,8 @@ class AuthServiceImplTest {
 
     @Test
     void registerShouldAlwaysCreateOrdinaryUser() {
-        when(redisService.getCode("register:code", "new@example.com")).thenReturn("1234");
+        when(redisService.consumeCode("register:code", "new@example.com", "1234"))
+                .thenReturn(VerificationCodeConsumeResult.SUCCESS);
         when(userInfoService.getOne(any())).thenReturn(null);
         when(userInfoService.save(any(UserInfo.class))).thenReturn(true);
 
@@ -232,6 +250,77 @@ class AuthServiceImplTest {
         ArgumentCaptor<UserInfo> captor = ArgumentCaptor.forClass(UserInfo.class);
         verify(userInfoService).save(captor.capture());
         assertThat(captor.getValue().getRole()).isEqualTo("user");
+    }
+
+    @Test
+    void registerShouldRejectInvalidVerificationCode() {
+        when(redisService.consumeCode("register:code", "new@example.com", "9999"))
+                .thenReturn(VerificationCodeConsumeResult.INVALID);
+
+        assertThatThrownBy(() -> authService.register("new@example.com", "9999", "New User"))
+                .isInstanceOf(AuthException.class)
+                .extracting(ex -> ((AuthException) ex).getErrorCode())
+                .isEqualTo(AuthErrorCode.AUTH_VERIFICATION_CODE_INVALID);
+        verify(userInfoService, never()).save(any(UserInfo.class));
+    }
+
+    @Test
+    void registerShouldRejectExpiredVerificationCode() {
+        when(redisService.consumeCode("register:code", "new@example.com", "1234"))
+                .thenReturn(VerificationCodeConsumeResult.EXPIRED);
+
+        assertThatThrownBy(() -> authService.register("new@example.com", "1234", "New User"))
+                .isInstanceOf(AuthException.class)
+                .extracting(ex -> ((AuthException) ex).getErrorCode())
+                .isEqualTo(AuthErrorCode.AUTH_VERIFICATION_CODE_EXPIRED);
+        verify(userInfoService, never()).save(any(UserInfo.class));
+    }
+
+    @Test
+    void concurrentLoginShouldAllowOnlyOneVerificationCodeConsumption() throws Exception {
+        UserInfo user = user(42L, "user@example.com", "user");
+        AtomicBoolean consumed = new AtomicBoolean(false);
+        CountDownLatch callers = new CountDownLatch(2);
+        when(redisService.consumeCode("login:code", user.getEmail(), "1234"))
+                .thenAnswer(invocation -> {
+                    callers.countDown();
+                    callers.await();
+                    return consumed.compareAndSet(false, true)
+                            ? VerificationCodeConsumeResult.SUCCESS
+                            : VerificationCodeConsumeResult.EXPIRED;
+                });
+        when(userInfoService.getOne(any())).thenReturn(user);
+        when(jwtUtil.generateAccessToken(42L, user.getEmail(), "user")).thenReturn("access-token");
+        when(jwtUtil.generateRefreshToken(eq(42L), anyString())).thenReturn("refresh-token");
+        when(jwtUtil.getAccessTokenExpiresInSeconds()).thenReturn(1800L);
+        when(jwtUtil.getRefreshTokenExpiresInSeconds()).thenReturn(604800L);
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Boolean>> futures = List.of(
+                    executor.submit(() -> loginSucceeded(user.getEmail(), "1234")),
+                    executor.submit(() -> loginSucceeded(user.getEmail(), "1234"))
+            );
+            long successes = 0;
+            for (Future<Boolean> future : futures) {
+                if (future.get()) {
+                    successes++;
+                }
+            }
+            assertThat(successes).isEqualTo(1);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private boolean loginSucceeded(String email, String code) {
+        try {
+            authService.login(email, code);
+            return true;
+        } catch (AuthException ex) {
+            assertThat(ex.getErrorCode()).isEqualTo(AuthErrorCode.AUTH_VERIFICATION_CODE_EXPIRED);
+            return false;
+        }
     }
 
     private boolean refreshSucceeded() {

@@ -12,6 +12,7 @@ import com.swpuagent.security.JwtUtil;
 import com.swpuagent.service.AuthService;
 import com.swpuagent.service.RedisService;
 import com.swpuagent.service.UserInfoService;
+import com.swpuagent.service.VerificationCodeConsumeResult;
 import com.swpuagent.service.auth.RefreshTokenStore;
 import com.swpuagent.utils.Result;
 import io.jsonwebtoken.Claims;
@@ -76,13 +77,7 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public Result<TokenPairResponse> login(String email, String code) {
-        String storedCode = redisService.getCode(LOGIN_CODE_PREFIX, email);
-        if (storedCode == null) {
-            throw new AuthException(AuthErrorCode.AUTH_VERIFICATION_CODE_EXPIRED);
-        }
-        if (!storedCode.equals(code)) {
-            throw new AuthException(AuthErrorCode.AUTH_VERIFICATION_CODE_INVALID);
-        }
+        consumeVerificationCode(LOGIN_CODE_PREFIX, email, code);
 
         log.info("AuthFlow action=LOGIN_VALIDATE phase=redis_verified email={}", maskEmail(email));
 
@@ -92,8 +87,6 @@ public class AuthServiceImpl implements AuthService {
         if (user == null || user.getId() == null) {
             throw new AuthException(AuthErrorCode.AUTH_USER_NOT_FOUND);
         }
-
-        redisService.deleteCode(LOGIN_CODE_PREFIX, email);
 
         String role = user.getRole() == null || user.getRole().isBlank() ? "user" : user.getRole();
         TokenPairResponse tokenPair = issueTokenPair(user.getId(), user.getEmail(), role);
@@ -161,13 +154,7 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public Result<Void> register(String email, String code, String userName) {
-        String storedCode = redisService.getCode(REGISTER_CODE_PREFIX, email);
-        if (storedCode == null) {
-            throw new AuthException(AuthErrorCode.AUTH_VERIFICATION_CODE_EXPIRED);
-        }
-        if (!storedCode.equals(code)) {
-            throw new AuthException(AuthErrorCode.AUTH_VERIFICATION_CODE_INVALID);
-        }
+        consumeVerificationCode(REGISTER_CODE_PREFIX, email, code);
 
         LambdaQueryWrapper<UserInfo> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(UserInfo::getEmail, email);
@@ -184,9 +171,21 @@ public class AuthServiceImpl implements AuthService {
         }
         log.info("AuthFlow action=REGISTER phase=db_insert email={} userName={}", maskEmail(email), userName);
 
-        redisService.deleteCode(REGISTER_CODE_PREFIX, email);
-
         return Result.success();
+    }
+
+    private void consumeVerificationCode(String prefix, String email, String submittedCode) {
+        VerificationCodeConsumeResult result =
+                redisService.consumeCode(prefix, email, submittedCode);
+        if (result == VerificationCodeConsumeResult.EXPIRED) {
+            throw new AuthException(AuthErrorCode.AUTH_VERIFICATION_CODE_EXPIRED);
+        }
+        if (result == VerificationCodeConsumeResult.INVALID) {
+            throw new AuthException(AuthErrorCode.AUTH_VERIFICATION_CODE_INVALID);
+        }
+        if (result != VerificationCodeConsumeResult.SUCCESS) {
+            throw new IllegalStateException("Unexpected verification code consumption result: " + result);
+        }
     }
 
     private Claims parseRefreshToken(String refreshToken) {
