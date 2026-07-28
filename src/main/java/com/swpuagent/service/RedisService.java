@@ -15,6 +15,11 @@ public interface RedisService {
     String getCode(String prefix, String email);
 
     /**
+     * Atomically compare and delete a verification code.
+     */
+    VerificationCodeConsumeResult consumeCode(String prefix, String email, String submittedCode);
+
+    /**
      * Delete a stored code.
      */
     void deleteCode(String prefix, String email);
